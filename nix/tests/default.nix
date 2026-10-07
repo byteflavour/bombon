@@ -194,6 +194,21 @@ let
       '';
     }
 
+    # The package set of a language prefixes the names of its packages
+    {
+      name = "package-sets-scoped";
+      drv = writeText "package-sets-scoped-1.0" "${python3Packages.requests}";
+      options = {
+        packageSets = [ python3Packages ];
+      };
+      assertion = ''
+        [ .components[] | select(.name == "requests" or .name == "urllib3") ]
+        | length >= 2 and all(
+          (.licenses | length > 0) and (.properties | any(.name == "bombon:origin" and .value == "package"))
+        )
+      '';
+    }
+
     # Metadata of a package that is built from the same source
     {
       name = "same-source";

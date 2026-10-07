@@ -163,41 +163,58 @@ let
       meta = normalisedMeta drv;
     };
 
-  # The name of the package a recipe builds, taken from the file name of the recipe.
-  recipeName =
+  # The names a package can be found under in a package set, from the file name of its recipe.
+  #
+  # The package set of a language prefixes the names of its packages with the name of the
+  # language or interpreter (e.g. `python3.13-requests`, `perl5.42.0-URI` or `r-ggplot2`), so the
+  # name is also tried without its first part. Perl modules additionally lose their dashes
+  # (`perl5.42.0-Module-Build` is `ModuleBuild`).
+  candidateNames =
     recipe:
-    (builtins.parseDrvName (lib.removeSuffix ".drv" (builtins.substring 33 (-1) (baseNameOf recipe))))
-    .name;
+    let
+      name =
+        (builtins.parseDrvName (lib.removeSuffix ".drv" (builtins.substring 33 (-1) (baseNameOf recipe))))
+        .name;
+      parts = lib.splitString "-" name;
+      rest = lib.tail parts;
+    in
+    lib.unique (
+      [ name ]
+      ++ lib.optionals (lib.length parts > 1) [
+        (lib.concatStringsSep "-" rest)
+        (lib.concatStrings rest)
+      ]
+    );
 
   recipeOf = drv: builtins.unsafeDiscardStringContext drv.drvPath;
 
-  # The packages that are found in the package sets under the name of a recipe.
+  # The packages that are found in the package sets under the names of a recipe.
   #
   # Looking up a package can fail, e.g. because it is marked as insecure. Such packages are
   # skipped.
   candidates =
     packageSets: recipe:
-    let
-      name = recipeName recipe;
-    in
     lib.concatMap (
       set:
-      let
-        candidate = builtins.tryEval (
-          let
-            drv = set.${name};
-            recipe = recipeOf drv;
-          in
-          # The recipe is forced here because that is what fails for such packages.
-          if lib.isDerivation drv then
-            builtins.seq recipe {
-              inherit drv recipe;
-            }
-          else
-            null
-        );
-      in
-      lib.optional (set ? ${name} && candidate.success && candidate.value != null) candidate.value
+      lib.concatMap (
+        name:
+        let
+          candidate = builtins.tryEval (
+            let
+              drv = set.${name};
+              recipe = recipeOf drv;
+            in
+            # The recipe is forced here because that is what fails for such packages.
+            if lib.isDerivation drv then
+              builtins.seq recipe {
+                inherit drv recipe;
+              }
+            else
+              null
+          );
+        in
+        lib.optional (set ? ${name} && candidate.success && candidate.value != null) candidate.value
+      ) (candidateNames recipe)
     ) packageSets;
 
   # Whether a package is built from a source that the recipe is built from as well.

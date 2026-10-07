@@ -146,7 +146,10 @@ where to find the packages of such dependencies:
 - `packageSets` is a list of package sets to look up the build recipes in. A
   package is looked up by the name of the recipe and only used if it is built
   by exactly that recipe. The packages that are found this way are followed
-  like the ones in `metadataFrom`.
+  like the ones in `metadataFrom`. The package set of a language prefixes the
+  names of its packages with the name of the language or interpreter (e.g.
+  `python3.13-requests` or `perl5.42.0-URI`), so the name is also tried without
+  that prefix.
 
 If a build recipe is not found but the package of the same name in
 `packageSets` is built from the same source (e.g. because the dependency is

@@ -30,8 +30,9 @@
   as buildtime dependencies, and their vendored SBOMs are not read.
 - Added the `packageSets` option to `buildBom`. Dependencies whose package is
   not found by following attributes are looked up in these package sets by the
-  name of their build recipe. A package is only used if it is built by exactly
-  that recipe.
+  name of their build recipe, also without the prefix that the package set of
+  a language adds (e.g. `python3.13-`). A package is only used if it is built
+  by exactly that recipe.
 - Added the `inferFromSameSource` option to `buildBom`. If a dependency is not
   found in `packageSets` but a package of the same name is built from the same
   source, the license, description, homepage and identifiers of that package
