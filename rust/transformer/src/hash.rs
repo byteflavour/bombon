@@ -55,6 +55,34 @@ impl FromStr for Algorithm {
 }
 
 impl SriHash {
+    /// Create an `SriHash` from the name of an algorithm and a hex encoded digest.
+    pub fn from_hex(algorithm: &str, hex: &str) -> Result<Self> {
+        if !hex.is_ascii() || !hex.len().is_multiple_of(2) {
+            bail!("Failed to decode hash digest");
+        }
+        let digest = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| anyhow!("Failed to decode hash digest"))?;
+
+        Ok(Self {
+            algorithm: algorithm.parse()?,
+            digest,
+        })
+    }
+
+    /// Return the hash in the SRI format.
+    pub fn to_sri(&self) -> String {
+        let algorithm = match self.algorithm {
+            Algorithm::Md5 => "md5",
+            Algorithm::Sha1 => "sha1",
+            Algorithm::Sha256 => "sha256",
+            Algorithm::Sha512 => "sha512",
+        };
+        format!("{algorithm}-{}", BASE64_STANDARD.encode(&self.digest))
+    }
+
     /// Return the digest as a lower hex encoded string.
     pub fn hex_digest(&self) -> String {
         let mut buffer = String::new();
@@ -62,5 +90,26 @@ impl SriHash {
             let _ = write!(&mut buffer, "{byte:02x}");
         }
         buffer
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sri_from_hex() -> Result<()> {
+        let hex = "3d3a1b973af218114f4f889bbaa2f4c037deaae0c8e815eec381c3d546b974a0";
+        let hash = SriHash::from_hex("sha256", hex)?;
+
+        assert_eq!(
+            hash.to_sri(),
+            "sha256-PToblzryGBFPT4ibuqL0wDfequDI6BXuw4HD1Ua5dKA="
+        );
+        assert_eq!(hash.hex_digest(), hex);
+        assert!(SriHash::from_hex("sha256", "3d3").is_err());
+        assert!(SriHash::from_hex("sha256", "zz").is_err());
+        assert!(SriHash::from_hex("blake3", "3d3a").is_err());
+        Ok(())
     }
 }

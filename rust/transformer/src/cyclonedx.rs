@@ -27,7 +27,7 @@ use itertools::Itertools;
 use sha2::{Digest, Sha256};
 
 use crate::buildtime_input::BuildtimeInput;
-use crate::derivation::{self, Derivation, Meta, Src};
+use crate::derivation::{self, Derivation, Identification, Meta, Src};
 use crate::hash::{self, SriHash};
 use crate::runtime_input::RuntimeInput;
 
@@ -329,24 +329,43 @@ impl CycloneDXComponent {
         };
         let version = derivation.version.unwrap_or_default();
         let mut component = Component::new(
-            // Classification::Application is used as per specification when the type is not known
-            // as is the case for dependencies from Nix
-            Classification::Application,
+            if derivation.is_file {
+                Classification::File
+            } else {
+                // Classification::Application is used as per specification when the type is not
+                // known as is the case for dependencies from Nix
+                Classification::Application
+            },
             &name,
             &version,
             Some(bom_ref(&derivation.path)),
         );
         component.scope = Some(Scope::Required);
-        component.purl = Purl::new("nix", &name, &version).ok();
-        component.hashes = derivation.output_hash.and_then(|s| convert_hash(&s));
 
         let mut external_references = Vec::new();
 
-        if let Some(src) = derivation.src
-            && !src.urls.is_empty()
-        {
-            external_references.extend(convert_src(&src));
+        if derivation.is_file {
+            // A downloaded file is identified by where it comes from and by its hash. It has
+            // neither a version nor a place in a package ecosystem.
+            component.version = None;
+            if let Some(src) = derivation.src {
+                component.hashes = src.hash.as_deref().and_then(convert_hash);
+                external_references.extend(src.urls.iter().map(|u| convert_distribution(u)));
+            }
+        } else {
+            component.purl = Purl::new("nix", &name, &version).ok();
+            component.hashes = derivation.output_hash.and_then(|s| convert_hash(&s));
+            if let Some(src) = derivation.src
+                && !src.urls.is_empty()
+            {
+                external_references.extend(convert_src(&src));
+            }
         }
+
+        if derivation.identification == Identification::Name {
+            component.evidence = Some(name_to_evidence(&name, &version));
+        }
+
         if let Some(meta) = derivation.meta {
             component.licenses = convert_licenses(&meta);
             component.description = meta.description.map(|s| NormalizedString::new(&s));
@@ -372,7 +391,12 @@ impl CycloneDXComponent {
                 descendants: None,
                 variants: None,
                 commits: None,
-                patches: Some(convert_patches(&derivation.patches)),
+                patches: Some(convert_patches(
+                    &derivation.patches,
+                    // The patches named by a build recipe are not necessarily available. They
+                    // are listed nonetheless.
+                    derivation.identification == Identification::Recipe,
+                )),
                 notes: None,
             });
         }
@@ -452,6 +476,36 @@ fn cpes_to_evidence(possible_cpes: &[derivation::Cpe]) -> Option<ComponentEviden
         occurrences: None,
         callstack: None,
     })
+}
+
+/// Record that the version of a component was split off a name.
+fn name_to_evidence(name: &str, version: &str) -> ComponentEvidence {
+    ComponentEvidence {
+        identity: Some(Identity {
+            field: IdentityField::Version,
+            methods: Some(Methods(vec![Method {
+                technique: "filename".to_string(),
+                // This marks the version as derived from a name. It is not a measurement.
+                confidence: ConfidenceScore::new(0.5),
+                value: Some(format!("{name}-{version}")),
+            }])),
+            confidence: None,
+            tools: None,
+        }),
+        licenses: None,
+        copyright: None,
+        occurrences: None,
+        callstack: None,
+    }
+}
+
+fn convert_distribution(url: &str) -> ExternalReference {
+    ExternalReference {
+        external_reference_type: ExternalReferenceType::Distribution,
+        url: string_to_url(url),
+        comment: None,
+        hashes: None,
+    }
 }
 
 fn convert_src(src: &Src) -> Vec<ExternalReference> {
@@ -536,23 +590,36 @@ fn metadata_tools() -> Tools {
     }
 }
 
-fn convert_patches(patches: &[String]) -> Patches {
+/// Convert patches to the `CycloneDX` format.
+///
+/// A patch that cannot be read is either left out or, if `keep_unavailable` is set, listed
+/// with a reference to the file instead of its content.
+fn convert_patches(patches: &[String], keep_unavailable: bool) -> Patches {
     let cyclonedx_patches = patches
         .iter()
-        .filter_map(|patch| fs::read_to_string(patch).ok())
-        .map(|diff| Patch {
-            // As we know nothing about the patch at this level, the safest is to assume that it's
-            // unofficial
-            patch_type: PatchClassification::Unofficial,
-            diff: Some(Diff {
-                text: Some(AttachedText {
-                    content_type: Some(NormalizedString::new("text/plain")),
-                    encoding: None,
-                    content: diff,
-                }),
-                url: None,
-            }),
-            resolves: None,
+        .filter_map(|patch| {
+            let diff = match fs::read_to_string(patch) {
+                Ok(content) => Diff {
+                    text: Some(AttachedText {
+                        content_type: Some(NormalizedString::new("text/plain")),
+                        encoding: None,
+                        content,
+                    }),
+                    url: None,
+                },
+                Err(_) if keep_unavailable => Diff {
+                    text: None,
+                    url: Some(Uri::new(patch)),
+                },
+                Err(_) => return None,
+            };
+            Some(Patch {
+                // As we know nothing about the patch at this level, the safest is to assume that
+                // it's unofficial
+                patch_type: PatchClassification::Unofficial,
+                diff: Some(diff),
+                resolves: None,
+            })
         })
         .collect::<Vec<_>>();
     Patches(cyclonedx_patches)
@@ -560,7 +627,177 @@ fn convert_patches(patches: &[String]) -> Patches {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
+
+    const SHA256: &str = "sha256-PToblzryGBFPT4ibuqL0wDfequDI6BXuw4HD1Ua5dKA=";
+
+    /// Serialize a single derivation as a component.
+    fn component(derivation: Derivation) -> Result<Value> {
+        let bom = CycloneDXBom(Bom {
+            components: Some(CycloneDXComponents::from_derivations([derivation]).into()),
+            ..Bom::default()
+        });
+        let json: Value = serde_json::from_slice(&bom.serialize()?)?;
+        Ok(json["components"][0].clone())
+    }
+
+    fn package() -> Derivation {
+        Derivation {
+            path: "/nix/store/b6dac7q3270fhwxr0glxi35hrhw2v97r-libssh2-1.11.1-dev".into(),
+            name: Some("libssh2-1.11.1".into()),
+            pname: Some("libssh2".into()),
+            version: Some("1.11.1".into()),
+            output_name: Some("dev".into()),
+            identification: Identification::Recipe,
+            ..Derivation::default()
+        }
+    }
+
+    fn file(hash: Option<&str>) -> Derivation {
+        Derivation {
+            path: "/nix/store/lih1c5qn71i56blnj7bq7jhnm3k1z4q9-xz-5.8.3.tar.gz".into(),
+            name: Some("xz-5.8.3.tar.gz".into()),
+            src: Some(Src {
+                urls: vec!["https://tukaani.org/xz/xz-5.8.3.tar.gz".into()],
+                hash: hash.map(Into::into),
+            }),
+            is_file: true,
+            identification: Identification::Recipe,
+            ..Derivation::default()
+        }
+    }
+
+    #[test]
+    fn package_from_recipe() -> Result<()> {
+        let component = component(Derivation {
+            src: Some(Src {
+                urls: vec!["https://example.org/libssh2-1.11.1.tar.gz".into()],
+                hash: Some(SHA256.into()),
+            }),
+            ..package()
+        })?;
+
+        assert_eq!(component["type"], "application");
+        assert_eq!(component["name"], "libssh2");
+        assert_eq!(component["version"], "1.11.1");
+        assert_eq!(component["purl"], "pkg:nix/libssh2@1.11.1");
+        assert_eq!(
+            component["bom-ref"],
+            "b6dac7q3270fhwxr0glxi35hrhw2v97r-libssh2-1.11.1-dev"
+        );
+        assert_eq!(component["externalReferences"][0]["type"], "vcs");
+        assert_eq!(
+            component["externalReferences"][0]["url"],
+            "https://example.org/libssh2-1.11.1.tar.gz"
+        );
+        assert_eq!(
+            component["externalReferences"][0]["hashes"][0]["content"],
+            "3d3a1b973af218114f4f889bbaa2f4c037deaae0c8e815eec381c3d546b974a0"
+        );
+        // Name and version are stated by the recipe, so there is nothing to mark.
+        assert!(component.get("evidence").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn downloaded_file() -> Result<()> {
+        let component = component(file(Some(SHA256)))?;
+
+        assert_eq!(component["type"], "file");
+        assert_eq!(component["name"], "xz-5.8.3.tar.gz");
+        assert!(component.get("version").is_none());
+        assert!(component.get("purl").is_none());
+        assert_eq!(component["hashes"][0]["alg"], "SHA-256");
+        assert_eq!(
+            component["hashes"][0]["content"],
+            "3d3a1b973af218114f4f889bbaa2f4c037deaae0c8e815eec381c3d546b974a0"
+        );
+        assert_eq!(component["externalReferences"][0]["type"], "distribution");
+        assert_eq!(
+            component["externalReferences"][0]["url"],
+            "https://tukaani.org/xz/xz-5.8.3.tar.gz"
+        );
+        assert!(component["externalReferences"][0].get("hashes").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn downloaded_file_tree() -> Result<()> {
+        let component = component(file(None))?;
+
+        assert_eq!(component["type"], "file");
+        assert!(component.get("hashes").is_none());
+        assert_eq!(component["externalReferences"][0]["type"], "distribution");
+        Ok(())
+    }
+
+    #[test]
+    fn version_from_name() -> Result<()> {
+        let component = component(Derivation {
+            path: "/nix/store/nm7p8wxflggcwxfzayhysq4z6a1wg373-emacs-pgtk-with-packages-31.1"
+                .into(),
+            name: Some("emacs-pgtk-with-packages".into()),
+            version: Some("31.1".into()),
+            identification: Identification::Name,
+            ..Derivation::default()
+        })?;
+
+        assert_eq!(component["name"], "emacs-pgtk-with-packages");
+        assert_eq!(component["version"], "31.1");
+        let identity = &component["evidence"]["identity"];
+        assert_eq!(identity["field"], "version");
+        assert_eq!(identity["methods"][0]["technique"], "filename");
+        assert_eq!(
+            identity["methods"][0]["value"],
+            "emacs-pgtk-with-packages-31.1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn patches_from_recipe() -> Result<()> {
+        let available = std::env::temp_dir().join(format!(
+            "bombon-transformer-test-{}.patch",
+            std::process::id()
+        ));
+        fs::write(&available, "--- a\n+++ b\n")?;
+        let unavailable = "/nix/store/00000000000000000000000000000000-CVE-2026-7598.patch";
+        let patches = vec![
+            available.to_string_lossy().into_owned(),
+            unavailable.to_string(),
+        ];
+
+        let from_recipe = component(Derivation {
+            patches: patches.clone(),
+            ..package()
+        });
+        let from_package = component(Derivation {
+            patches,
+            identification: Identification::Package,
+            ..package()
+        });
+        fs::remove_file(&available)?;
+
+        // Patches named by a recipe are all listed, with their content if it is available.
+        let from_recipe = from_recipe?;
+        let listed = from_recipe["pedigree"]["patches"]
+            .as_array()
+            .context("Missing patches")?;
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0]["diff"]["text"]["content"], "--- a\n+++ b\n");
+        assert!(listed[1]["diff"].get("text").is_none());
+        assert_eq!(listed[1]["diff"]["url"], unavailable);
+
+        // Patches of a package object are part of the build and thus expected to be available.
+        let from_package = from_package?;
+        let listed = from_package["pedigree"]["patches"]
+            .as_array()
+            .context("Missing patches")?;
+        assert_eq!(listed.len(), 1);
+        Ok(())
+    }
 
     #[test]
     fn serial_number_from_seed() {

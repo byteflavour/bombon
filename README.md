@@ -109,6 +109,37 @@ myGoPackageWithSbom = bombon.passthruVendoredSbom.go myGoPackage { inherit pkgs;
 
 An SBOM built from this new derivation will now include the vendored dependencies.
 
+## Dependencies without Metadata
+
+bombon reads the metadata of dependencies (license, description, CPE, etc.)
+from the packages it finds by following the attributes of the derivation it
+builds a BOM for. Not every dependency can be found this way. For example, a
+package that is only referred to in a string (`"${pkgs.jq}/bin/jq"`) is part of
+the runtime closure but cannot be reached via the attributes of the derivation.
+This is common in NixOS systems, where services refer to their packages in the
+text of unit files.
+
+For such dependencies, bombon consults the build recipes (`.drv` files) of the
+derivation's build closure. What ends up in the BOM depends on what the recipe
+states:
+
+1. If the recipe states a `pname` and a `version`, they are used as they are,
+   together with the patches and the source URL of the recipe.
+2. If the recipe is a download (e.g. `fetchurl`) that states neither, the
+   dependency is included as a component of type `file` with the URL it is
+   downloaded from and, for single files, its hash.
+3. If the recipe only states a `name`, the part after the last dash is used as
+   the version if it starts with a digit. These components are marked with
+   identity evidence (technique `filename`).
+4. Everything else (e.g. generated configuration files) is not included.
+
+Components from build recipes have no license, description or CPE, because
+recipes do not contain this information. To get it into the BOM, make the
+package reachable, e.g. via `extraPaths`.
+
+The build recipes are read while evaluating. This does not work in a read-only
+evaluation (e.g. `nix-instantiate --eval` without `--read-write-mode`).
+
 ## Options
 
 `buildBom` accepts options as an attribute set. All attributes are optional:

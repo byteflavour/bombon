@@ -5,6 +5,7 @@
   cyclonedx-cli,
   buildtimeDependencies,
   runtimeDependencies,
+  recipes,
 }:
 
 drv:
@@ -32,6 +33,7 @@ runCommand "${drv.name}.cdx.json"
     bombon-transformer ${drv} \
       ${toString args} \
       --serial-number-seed "$out" \
+      --recipes ${recipes drv extraPaths} \
       ${buildtimeDependencies drv extraPaths} \
       ${runtimeDependencies drv extraPaths} \
       tmp.cdx.json

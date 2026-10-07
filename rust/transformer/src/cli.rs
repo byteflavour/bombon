@@ -23,6 +23,10 @@ pub struct Cli {
     #[arg(long)]
     serial_number_seed: String,
 
+    /// Path to JSON containing the build recipes of the target
+    #[arg(long)]
+    recipes: PathBuf,
+
     /// Path to target derivation
     target: String,
 
@@ -42,6 +46,7 @@ impl Cli {
             self.include_buildtime_dependencies,
             &self.exclude,
             &self.serial_number_seed,
+            &self.recipes,
             &self.target,
             &self.buildtime_input,
             &self.runtime_input,
