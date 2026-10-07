@@ -62,15 +62,35 @@ let
   fields =
     drv:
     let
-      # A derivation whose `meta.license` is a hand-rolled attrset or a plain string
-      # does not carry `licenseType`, so `lib.licenses.toSPDX` throws
-      # `attribute 'licenseType' missing` and aborts the entire SBOM. Guard the call.
+      # A license that is a hand-rolled attrset or a plain string does not carry `licenseType`, so
+      # `lib.licenses.toSPDX` throws `attribute 'licenseType' missing` and aborts the entire SBOM.
+      # Such a license can also be part of a compound license, which is why the conversion is
+      # done here.
+      bracket =
+        license:
+        if
+          lib.elem (license.licenseType or null) [
+            "compound"
+            "exception"
+          ]
+        then
+          "(${toSPDX license})"
+        else
+          toSPDX license;
       toSPDX =
         license:
-        if license ? licenseType then
-          lib.licenses.toSPDX license
-        else if lib.isString license then
+        if lib.isString license then
           license
+        else if !(license ? licenseType) then
+          "LicenseRef-unknown"
+        else if license.licenseType == "simple" then
+          license.spdxId or "LicenseRef-nixos-${license.shortName}"
+        else if license.licenseType == "compound" then
+          lib.concatMapStringsSep " ${license.operator} " bracket license.licenses
+        else if license.licenseType == "exception" then
+          "${bracket license.license} ${license.operator} ${bracket license.exception}"
+        else if license.licenseType == "plus" then
+          "${bracket license.license}${license.operator}"
         else
           "LicenseRef-unknown";
 
