@@ -5,17 +5,30 @@
   cyclonedx-cli,
   buildtimeDependencies,
   runtimeDependencies,
+  recipeClosure,
   recipes,
 }:
 
 drv:
 {
   extraPaths ? [ ],
+  metadataFrom ? [ ],
+  packageSets ? [ ],
+  inferFromSameSource ? true,
   includeBuildtimeDependencies ? false,
   excludes ? [ ],
 }:
 
 let
+  # The build recipes are read once: they describe the dependencies and are looked up in the
+  # package sets.
+  buildRecipes = recipeClosure drv extraPaths;
+
+  buildtime = buildtimeDependencies drv extraPaths {
+    inherit metadataFrom packageSets inferFromSameSource;
+    recipeClosure = buildRecipes;
+  };
+
   args =
     lib.optionals includeBuildtimeDependencies [
       "--include-buildtime-dependencies"
@@ -33,8 +46,9 @@ runCommand "${drv.name}.cdx.json"
     bombon-transformer ${drv} \
       ${toString args} \
       --serial-number-seed "$out" \
-      --recipes ${recipes drv extraPaths} \
-      ${buildtimeDependencies drv extraPaths} \
+      --recipes ${recipes drv buildRecipes} \
+      --same-source-metadata ${buildtime.sameSourceMetadata} \
+      ${buildtime.packages} \
       ${runtimeDependencies drv extraPaths} \
       tmp.cdx.json
 

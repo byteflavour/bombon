@@ -24,8 +24,28 @@
   as components of type `file`. They carry the URL they are downloaded from
   and, for single files, their hash. They have neither a version nor a PURL.
 
+- Added the `metadataFrom` option to `buildBom`. The packages given this way
+  are followed to find the metadata (license, description, CPE, etc.) of
+  dependencies but, unlike `extraPaths`, are not added to the SBOM, not even
+  as buildtime dependencies, and their vendored SBOMs are not read.
+- Added the `packageSets` option to `buildBom`. Dependencies whose package is
+  not found by following attributes are looked up in these package sets by the
+  name of their build recipe, also without the prefix that the package set of
+  a language adds (e.g. `python3.13-`). A package is only used if it is built
+  by exactly that recipe.
+- Added the `inferFromSameSource` option to `buildBom`. If a dependency is not
+  found in `packageSets` but a package of the same name is built from the same
+  source, the license, description, homepage and identifiers of that package
+  are used. Enabled by default.
+- Added the property `bombon:origin` to every component of a dependency. It
+  tells whether the component is described by a package, a build recipe, a
+  build recipe with the metadata of a same-source package, a download or a
+  name.
+
 ### Changed
 
+- The packages a SBOM is generated for are not built anymore just to generate
+  the SBOM. Only the runtime closure, the patches and the vendored SBOMs are.
 - Dependencies that are only referred to in a string (e.g. `"${pkgs.jq}/bin/jq"`)
   are now described by what their build recipe (`.drv` file) states instead of
   by what can be guessed from their store path. Their name, version, patches

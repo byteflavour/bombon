@@ -27,6 +27,11 @@ pub struct Cli {
     #[arg(long)]
     recipes: PathBuf,
 
+    /// Path to JSON containing the metadata of packages that are built from the same source as
+    /// a build recipe of the target
+    #[arg(long)]
+    same_source_metadata: PathBuf,
+
     /// Path to target derivation
     target: String,
 
@@ -47,6 +52,7 @@ impl Cli {
             &self.exclude,
             &self.serial_number_seed,
             &self.recipes,
+            &self.same_source_metadata,
             &self.target,
             &self.buildtime_input,
             &self.runtime_input,

@@ -159,6 +159,73 @@ let
           and any(.dependencies[]; .dependsOn | index($ref))
       '';
     }
+
+    # Metadata for a dependency that is only referred to in a string. A package that is not a
+    # dependency (hello) adds nothing, not even as a buildtime dependency.
+    {
+      name = "metadata-from";
+      drv = writeText "metadata-from-1.0" "${jq}/bin/jq";
+      options = buildtimeOptions // {
+        metadataFrom = [
+          jq
+          hello
+        ];
+      };
+      assertion = ''
+        ([ .components[] | select(.name == "jq") ]
+          | length > 0 and all(
+            (.licenses | length > 0) and (.properties | any(.name == "bombon:origin" and .value == "package"))
+          ))
+        and ([ .components[] | select(.name == "hello") ] | length == 0)
+      '';
+    }
+
+    # Packages for build recipes are looked up in a package set
+    {
+      name = "package-sets";
+      drv = writeText "package-sets-1.0" "${jq}/bin/jq";
+      options = {
+        packageSets = [ pkgs ];
+      };
+      # jq is looked up, oniguruma is found because jq depends on it
+      assertion = ''
+        [ .components[] | select(.name == "jq" or .name == "oniguruma") ]
+        | length >= 2 and all(.licenses | length > 0)
+      '';
+    }
+
+    # The package set of a language prefixes the names of its packages
+    {
+      name = "package-sets-scoped";
+      drv = writeText "package-sets-scoped-1.0" "${python3Packages.requests}";
+      options = {
+        packageSets = [ python3Packages ];
+      };
+      assertion = ''
+        [ .components[] | select(.name == "requests" or .name == "urllib3") ]
+        | length >= 2 and all(
+          (.licenses | length > 0) and (.properties | any(.name == "bombon:origin" and .value == "package"))
+        )
+      '';
+    }
+
+    # Metadata of a package that is built from the same source
+    {
+      name = "same-source";
+      drv = writeText "same-source-1.0" "${
+        jq.overrideAttrs (_: {
+          SOME_FLAG = "1";
+        })
+      }/bin/jq";
+      options = {
+        packageSets = [ pkgs ];
+      };
+      assertion = ''
+        .components[] | select(.name == "jq")
+        | (.licenses | length > 0)
+          and (.properties | any(.name == "bombon:origin" and .value == "recipe+same-source-package"))
+      '';
+    }
   ];
 
   cycloneDxVersion = "1.7";

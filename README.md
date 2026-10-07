@@ -134,8 +134,61 @@ states:
 4. Everything else (e.g. generated configuration files) is not included.
 
 Components from build recipes have no license, description or CPE, because
-recipes do not contain this information. To get it into the BOM, make the
-package reachable, e.g. via `extraPaths`.
+recipes do not contain this information. There are two ways to tell bombon
+where to find the packages of such dependencies:
+
+- `metadataFrom` is a list of packages to additionally start following
+  attributes from. Unlike `extraPaths`, these packages are not added to the
+  BOM. They only describe the dependencies that are part of the BOM anyway:
+  they provide their metadata and patches, but neither their vendored SBOMs
+  (see [Vendored Dependencies](#vendored-dependencies)) nor their buildtime
+  dependencies. A package that is not a dependency has no effect.
+- `packageSets` is a list of package sets to look up the build recipes in. A
+  package is looked up by the name of the recipe and only used if it is built
+  by exactly that recipe. The packages that are found this way are followed
+  like the ones in `metadataFrom`. The package set of a language prefixes the
+  names of its packages with the name of the language or interpreter (e.g.
+  `python3.13-requests` or `perl5.42.0-URI`), so the name is also tried without
+  that prefix.
+
+If a build recipe is not found but the package of the same name in
+`packageSets` is built from the same source (e.g. because the dependency is
+built with different options), the license, description, homepage and
+identifiers of that package are used. Because this is not the package that is
+part of the BOM, such components are marked (see below). Set
+`inferFromSameSource` to `false` to turn this off.
+
+For a NixOS system, the packages are known to the configuration before they
+end up in the text of a unit file:
+
+```nix
+bombon.buildBom config.system.build.toplevel {
+  metadataFrom =
+    config.environment.systemPackages
+    ++ lib.concatMap (unit: lib.filter lib.isDerivation unit.path) (
+      lib.attrValues config.systemd.services
+    );
+  packageSets = [
+    pkgs
+    pkgs.perlPackages
+    pkgs.python3Packages
+  ];
+}
+```
+
+Every component of a dependency has a property `bombon:origin` that tells
+where its name, version and metadata come from:
+
+- `package`: a package.
+- `recipe`: a build recipe that states a `pname` and a `version`.
+- `recipe+same-source-package`: like `recipe`, but the metadata is the one of a
+  package that is built from the same source.
+- `file`: a build recipe that is a download.
+- `name`: a build recipe that only states a `name`.
+
+Looking up packages happens while evaluating. For a NixOS system with about
+13,000 build recipes and 1,000 packages in `metadataFrom` it takes about 40
+seconds and 1.3 GiB of memory.
 
 The build recipes are read while evaluating. This does not work in a read-only
 evaluation (e.g. `nix-instantiate --eval` without `--read-write-mode`).
@@ -149,6 +202,15 @@ evaluation (e.g. `nix-instantiate --eval` without `--read-write-mode`).
   [`unsafeDiscardReferences`](https://nixos.org/manual/nix/stable/language/advanced-attributes#adv-attr-unsafeDiscardReferences)
   but you still want their contents to appear in the SBOM. The `extraPaths`
   will appear as components of the main derivation.
+- `metadataFrom`: a list of packages that provide metadata for dependencies
+  without being added to the SBOM. See [Dependencies without
+  Metadata](#dependencies-without-metadata).
+- `packageSets`: a list of package sets to look up the packages of
+  dependencies in. See [Dependencies without
+  Metadata](#dependencies-without-metadata).
+- `inferFromSameSource`: boolean flag to use the metadata of a package in
+  `packageSets` that is built from the same source as a dependency. Enabled by
+  default.
 - `includeBuildtimeDependencies`: boolean flag to include buildtime dependencies in output.
 - `excludes`: a list of regex patterns of store paths to exclude from the final
   SBOM.
