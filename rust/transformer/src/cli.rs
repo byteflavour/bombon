@@ -40,6 +40,12 @@ pub struct Cli {
     #[arg(long)]
     subject_version: Option<String>,
 
+    /// Store path that is part of what the SBOM describes besides the target derivation.
+    ///
+    /// Can be given multiple times.
+    #[arg(long)]
+    extra_path: Vec<String>,
+
     /// Path to target derivation
     target: String,
 
@@ -63,6 +69,7 @@ impl Cli {
             same_source_metadata: self.same_source_metadata,
             subject_name: self.subject_name,
             subject_version: self.subject_version,
+            extra_paths: self.extra_path,
             target: self.target,
             buildtime_input: self.buildtime_input,
             runtime_input: self.runtime_input,

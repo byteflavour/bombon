@@ -193,6 +193,22 @@ seconds and 1.3 GiB of memory.
 The build recipes are read while evaluating. This does not work in a read-only
 evaluation (e.g. `nix-instantiate --eval` without `--read-write-mode`).
 
+## Dependencies between Components
+
+The SBOM tells which component depends on which. For runtime dependencies this
+is what a store path refers to. Not every store path is a component though: the
+unit files and the configuration of a NixOS system, for example, are not. If a
+component refers to such a store path, it depends on the components that store
+path refers to in turn. The SBOM does not tell these dependencies apart from the
+ones a component refers to directly.
+
+This way every component can be reached from what the SBOM describes. That in
+turn depends on the `extraPaths`, which it does not refer to but which are part
+of it.
+
+The buildtime dependencies that are added with `includeBuildtimeDependencies`
+are only the direct build inputs of a component.
+
 ## Creator of a Component
 
 BSI TR-03183-2 requires every component to name its creator: an email address

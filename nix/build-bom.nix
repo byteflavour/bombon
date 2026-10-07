@@ -104,6 +104,8 @@ let
       "--include-buildtime-dependencies"
     ]
     ++ lib.optionals (excludes != [ ]) (lib.map (e: "--exclude ${e}") excludes)
+    # Only the store paths are of interest. They are built for the runtime dependencies anyway.
+    ++ lib.map (path: "--extra-path ${builtins.unsafeDiscardStringContext "${path}"}") extraPaths
     ++ subjectArgs;
 in
 runCommand "${drv.name}.cdx.json"

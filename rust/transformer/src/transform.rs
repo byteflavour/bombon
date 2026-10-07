@@ -31,6 +31,8 @@ pub struct Options {
     pub subject_name: Option<String>,
     /// Version to describe the target derivation with instead of its own.
     pub subject_version: Option<String>,
+    /// Store paths that are part of what the SBOM describes besides the target derivation.
+    pub extra_paths: Vec<String>,
     /// Store path of the target derivation.
     pub target: String,
     /// Path to JSON containing the buildtime input.
@@ -94,6 +96,7 @@ pub fn transform(options: &Options) -> Result<()> {
     let dependencies = CycloneDXDependencies::assemble(
         &components,
         &target_derivation,
+        &options.extra_paths,
         &runtime_input,
         &buildtime_input,
         options.include_buildtime_dependencies,

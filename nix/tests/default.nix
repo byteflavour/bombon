@@ -121,6 +121,12 @@ let
       options = {
         extraPaths = [ hello ];
       };
+      # git does not refer to hello but what the SBOM describes depends on it
+      assertion = ''
+        (.components[] | select(.name == "hello") | ."bom-ref") as $hello
+        | .metadata.component."bom-ref" as $subject
+        | any(.dependencies[]; .ref == $subject and (.dependsOn | index($hello)))
+      '';
     }
     # Takes too much storage for GitHub Actions
     # {
@@ -211,6 +217,23 @@ let
             .components[] | select(.properties | any(.name == "bombon:origin" and .value == "recipe"));
             has("manufacturer") | not
           )
+      '';
+    }
+
+    # A dependency that is referred to through a store path that is not a component, like the
+    # packages of a NixOS system that are referred to in its unit files
+    {
+      name = "indirect-reference";
+      drv = writeText "indirect-reference-1.0" "${writeText "unit" "${jq}/bin/jq"}";
+      options = { };
+      assertion = ''
+        .metadata.component."bom-ref" as $subject
+        | (.dependencies | map({ (.ref): (.dependsOn // [ ]) }) | add) as $graph
+        | ([ $subject | recurse($graph[.][]) ] | unique) as $reachable
+        | ([ .components[] | select(.name == "jq") | ."bom-ref" ]) as $jq
+        | any($jq[]; . as $ref | $graph[$subject] | index($ref))
+        and all(.components[]; ."bom-ref" as $ref | $reachable | index($ref))
+        and all(.components[]; .name != "unit")
       '';
     }
 
