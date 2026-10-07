@@ -22,6 +22,17 @@ let
       name = "hello";
       drv = hello;
       options = { };
+      # The homepage of a package is its creator. The property it is passed along in is gone.
+      assertion = ''
+        def website: [ .externalReferences[]? | select(.type == "website") | .url ];
+        (.metadata.component | (website | length) == 1 and .manufacturer.url == website)
+        and all(
+          .components[];
+          (.manufacturer.url // [ ]) == website
+          and (.properties | any(.name == "bombon:origin"))
+          and (.properties | all(.name != "bombon:manufacturer-url"))
+        )
+      '';
     }
     {
       name = "hello-buildtime";
@@ -157,6 +168,11 @@ let
         | ($ref | endswith("-lib"))
           and any(.dependencies[]; .ref == $ref)
           and any(.dependencies[]; .dependsOn | index($ref))
+          # Nothing is known about who created a dependency that is described by its recipe
+          and all(
+            .components[] | select(.properties | any(.name == "bombon:origin" and .value == "recipe"));
+            has("manufacturer") | not
+          )
       '';
     }
 
