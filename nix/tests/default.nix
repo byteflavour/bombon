@@ -26,12 +26,50 @@ let
       assertion = ''
         def website: [ .externalReferences[]? | select(.type == "website") | .url ];
         (.metadata.component | (website | length) == 1 and .manufacturer.url == website)
+        # Nothing is said about the SBOM itself unless it is given
+        and (.metadata | (has("timestamp") or has("manufacturer")) | not)
         and all(
           .components[];
           (.manufacturer.url // [ ]) == website
           and (.properties | any(.name == "bombon:origin"))
           and (.properties | all(.name != "bombon:manufacturer-url"))
         )
+      '';
+    }
+    # What is given about the SBOM and its subject
+    {
+      name = "document-metadata";
+      drv = hello;
+      options = {
+        timestamp = "2026-01-31T12:00:00Z";
+        creator = {
+          name = "Example";
+          email = "sbom@example.org";
+        };
+        subject = {
+          name = "greeter";
+          version = "1.0";
+          creator = {
+            url = "https://example.org";
+          };
+        };
+      };
+      assertion = ''
+        .metadata.component."bom-ref" as $subject
+        | .metadata.timestamp == "2026-01-31T12:00:00Z"
+        and .metadata.manufacturer == { name: "Example", contact: [ { email: "sbom@example.org" } ] }
+        and any(.metadata.tools.components[]; .name == "bombon")
+        and (
+          .metadata.component
+          | .name == "greeter"
+            and .version == "1.0"
+            and .purl == "pkg:nix/greeter@1.0"
+            and .manufacturer == { url: [ "https://example.org" ] }
+        )
+        # It is still the derivation that is described
+        and ($subject | test("^[a-z0-9]{32}-hello-"))
+        and any(.components[]; ."bom-ref" == $subject and .name == "hello")
+        and any(.dependencies[]; .ref == $subject and (.dependsOn | length > 0))
       '';
     }
     {

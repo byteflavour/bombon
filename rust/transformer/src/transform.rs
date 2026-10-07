@@ -27,6 +27,10 @@ pub struct Options {
     /// Path to JSON containing the metadata of packages that are built from the same source as a
     /// build recipe of the target.
     pub same_source_metadata: PathBuf,
+    /// Name to describe the target derivation with instead of its own.
+    pub subject_name: Option<String>,
+    /// Version to describe the target derivation with instead of its own.
+    pub subject_version: Option<String>,
     /// Store path of the target derivation.
     pub target: String,
     /// Path to JSON containing the buildtime input.
@@ -96,8 +100,15 @@ pub fn transform(options: &Options) -> Result<()> {
         vendored_dependencies,
     );
 
+    // The SBOM can describe its subject under another name and version than the ones of the
+    // target derivation. This only concerns the subject, not the component of the derivation.
+    let subject = target_derivation.described_as(
+        options.subject_name.as_deref(),
+        options.subject_version.as_deref(),
+    );
+
     let bom = CycloneDXBom::build(
-        target_derivation,
+        subject,
         components,
         dependencies,
         &options.serial_number_seed,

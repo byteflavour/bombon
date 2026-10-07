@@ -728,6 +728,49 @@ mod tests {
     }
 
     #[test]
+    fn subject() -> Result<()> {
+        let system = Derivation {
+            path: "/nix/store/nm7p8wxflggcwxfzayhysq4z6a1wg373-nixos-system-host-26.11".into(),
+            name: Some("nixos-system-host-26.11".into()),
+            identification: Identification::Package,
+            ..Derivation::default()
+        };
+        let subject = |name: Option<&str>, version: Option<&str>| -> Result<Value> {
+            let bom = CycloneDXBom::build(
+                system.clone().described_as(name, version),
+                CycloneDXComponents::from_derivations([]),
+                CycloneDXDependencies(Dependencies(Vec::new())),
+                "seed",
+            );
+            let json: Value = serde_json::from_slice(&bom.serialize()?)?;
+            Ok(json["metadata"]["component"].clone())
+        };
+
+        // Nothing is given: the name is not split into a name and a version.
+        let unchanged = subject(None, None)?;
+        assert_eq!(unchanged["name"], "nixos-system-host-26.11");
+        assert_eq!(unchanged["version"], "");
+        assert_eq!(unchanged["purl"], "pkg:nix/nixos-system-host-26.11");
+
+        let described = subject(Some("host"), Some("26.11"))?;
+        assert_eq!(described["name"], "host");
+        assert_eq!(described["version"], "26.11");
+        assert_eq!(described["purl"], "pkg:nix/host@26.11");
+        // It is still the same store path that is described.
+        assert_eq!(described["bom-ref"], unchanged["bom-ref"]);
+        assert_eq!(described["properties"], unchanged["properties"]);
+
+        // What is not given is kept.
+        let version_only = subject(None, Some("26.11"))?;
+        assert_eq!(version_only["name"], "nixos-system-host-26.11");
+        assert_eq!(version_only["version"], "26.11");
+        let name_only = subject(Some("host"), None)?;
+        assert_eq!(name_only["name"], "host");
+        assert_eq!(name_only["version"], "");
+        Ok(())
+    }
+
+    #[test]
     fn creator() -> Result<()> {
         let meta = |homepage: Option<&str>| -> Result<Meta> {
             Ok(serde_json::from_value(serde_json::json!({

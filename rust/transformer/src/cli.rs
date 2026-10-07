@@ -32,6 +32,14 @@ pub struct Cli {
     #[arg(long)]
     same_source_metadata: PathBuf,
 
+    /// Name to describe the target derivation with instead of its own
+    #[arg(long)]
+    subject_name: Option<String>,
+
+    /// Version to describe the target derivation with instead of its own
+    #[arg(long)]
+    subject_version: Option<String>,
+
     /// Path to target derivation
     target: String,
 
@@ -53,6 +61,8 @@ impl Cli {
             serial_number_seed: self.serial_number_seed,
             recipes: self.recipes,
             same_source_metadata: self.same_source_metadata,
+            subject_name: self.subject_name,
+            subject_version: self.subject_version,
             target: self.target,
             buildtime_input: self.buildtime_input,
             runtime_input: self.runtime_input,
