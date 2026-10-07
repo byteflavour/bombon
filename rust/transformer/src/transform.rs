@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::Write;
-use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use itertools::Itertools;
@@ -14,41 +14,63 @@ use crate::derivation::Derivation;
 use crate::recipe::RecipeIndex;
 use crate::runtime_input::RuntimeInput;
 
-#[allow(clippy::too_many_arguments)]
-pub fn transform(
-    include_buildtime_dependencies: bool,
-    exclude: &[String],
-    serial_number_seed: &str,
-    recipes_path: &Path,
-    same_source_metadata_path: &Path,
-    target_path: &str,
-    buildtime_input_path: &Path,
-    runtime_input_path: &Path,
-    output: &Path,
-) -> Result<()> {
-    let buildtime_input = BuildtimeInput::from_file(buildtime_input_path)?;
+/// What to transform and how.
+pub struct Options {
+    /// Include buildtime dependencies in the SBOM.
+    pub include_buildtime_dependencies: bool,
+    /// Regex patterns of store paths to exclude from the SBOM.
+    pub exclude: Vec<String>,
+    /// Data to derive the serial number of the SBOM from.
+    pub serial_number_seed: String,
+    /// Path to JSON containing the build recipes of the target.
+    pub recipes: PathBuf,
+    /// Path to JSON containing the metadata of packages that are built from the same source as a
+    /// build recipe of the target.
+    pub same_source_metadata: PathBuf,
+    /// Name to describe the target derivation with instead of its own.
+    pub subject_name: Option<String>,
+    /// Version to describe the target derivation with instead of its own.
+    pub subject_version: Option<String>,
+    /// Store path of the target derivation.
+    pub target: String,
+    /// Path to JSON containing the buildtime input.
+    pub buildtime_input: PathBuf,
+    /// Path to JSON containing the runtime input.
+    pub runtime_input: PathBuf,
+    /// Path to write the SBOM to.
+    pub output: PathBuf,
+}
+
+pub fn transform(options: &Options) -> Result<()> {
+    let buildtime_input = BuildtimeInput::from_file(&options.buildtime_input)?;
     let target_derivation = buildtime_input
         .0
-        .get(target_path)
+        .get(&options.target)
         .map(ToOwned::to_owned)
         .with_context(|| {
-            format!("Buildtime input doesn't contain target derivation: {target_path}")
+            format!(
+                "Buildtime input doesn't contain target derivation: {}",
+                options.target
+            )
         })?;
 
-    let runtime_input = RuntimeInput::from_file(runtime_input_path)?;
-    let recipes = RecipeIndex::from_file(recipes_path)?;
-    let same_source = SameSourceMetadata::from_file(same_source_metadata_path)?;
+    let runtime_input = RuntimeInput::from_file(&options.runtime_input)?;
+    let recipes = RecipeIndex::from_file(&options.recipes)?;
+    let same_source = SameSourceMetadata::from_file(&options.same_source_metadata)?;
 
     let runtime_derivations =
         runtime_derivations(&runtime_input, &buildtime_input, &recipes, &same_source);
 
-    let all_derivations: Box<dyn Iterator<Item = Derivation>> = if include_buildtime_dependencies {
+    let all_derivations: Box<dyn Iterator<Item = Derivation>> = if options
+        .include_buildtime_dependencies
+    {
         Box::new(runtime_derivations.chain(buildtime_derivations(&buildtime_input, &runtime_input)))
     } else {
         Box::new(runtime_derivations)
     };
 
-    let set = RegexSet::new(exclude).context("Failed to build regex set from exclude patterns")?;
+    let set = RegexSet::new(&options.exclude)
+        .context("Failed to build regex set from exclude patterns")?;
 
     let all_derivations = all_derivations
         .filter(is_component)
@@ -74,18 +96,25 @@ pub fn transform(
         &target_derivation,
         &runtime_input,
         &buildtime_input,
-        include_buildtime_dependencies,
+        options.include_buildtime_dependencies,
         vendored_dependencies,
     );
 
+    // The SBOM can describe its subject under another name and version than the ones of the
+    // target derivation. This only concerns the subject, not the component of the derivation.
+    let subject = target_derivation.described_as(
+        options.subject_name.as_deref(),
+        options.subject_version.as_deref(),
+    );
+
     let bom = CycloneDXBom::build(
-        target_derivation,
+        subject,
         components,
         dependencies,
-        serial_number_seed,
+        &options.serial_number_seed,
     );
-    let mut file = File::create(output)
-        .with_context(|| format!("Failed to create file {}", output.display()))?;
+    let mut file = File::create(&options.output)
+        .with_context(|| format!("Failed to create file {}", options.output.display()))?;
     file.write_all(&bom.serialize()?)?;
 
     Ok(())

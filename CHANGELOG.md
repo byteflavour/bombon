@@ -41,6 +41,11 @@
   homepage of its package is included as the `manufacturer` of the component.
   This is the upstream project, also for packages that are patched. Components
   whose package is not known or has no homepage have no `manufacturer`.
+- Added the `timestamp`, `creator` and `subject` options to `buildBom` to tell
+  when the data of the SBOM was compiled, who created it, and the name, the
+  version and the creator of what it describes, as required by BSI TR-03183-2.
+  Without them the SBOM is the same as before. bombon never uses the current
+  time, so the same input still yields the same SBOM.
 - Added the property `bombon:origin` to every component of a dependency. It
   tells whether the component is described by a package, a build recipe, a
   build recipe with the metadata of a same-source package, a download or a

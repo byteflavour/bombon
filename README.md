@@ -209,6 +209,45 @@ A component whose package is not known (see [Dependencies without
 Metadata](#dependencies-without-metadata)) or has no homepage has no
 `manufacturer`.
 
+## The SBOM and its Subject
+
+BSI TR-03183-2 requires an SBOM to tell when its data was compiled and who
+created it. It also requires the creator, the name and the version of what the
+SBOM describes. bombon cannot know any of this, so it is given with options:
+
+```nix
+bombon.buildBom config.system.build.toplevel {
+  timestamp = "2026-01-31T12:00:00Z";
+  creator = {
+    name = "Example";
+    email = "sbom@example.org";
+  };
+  subject = {
+    name = config.networking.hostName;
+    version = config.system.nixos.version;
+    creator = {
+      url = "https://example.org";
+    };
+  };
+}
+```
+
+- `timestamp` is when the data of the SBOM was compiled, e.g. when the
+  configuration it is generated from was last changed. It has to be in UTC and
+  of the form `2026-01-31T12:00:00Z`. bombon never uses the current time,
+  because then the same input would not yield the same SBOM anymore.
+- `creator` is who created the SBOM: an `email` or a `url`, or both, and
+  optionally a `name`. Keep in mind that this is part of every SBOM you pass on.
+- `subject` is what the SBOM describes. Its `name` and `version` replace the
+  ones of the derivation, which, for example, a NixOS system does not have. Its
+  `creator` is given like the creator of the SBOM and replaces the homepage of
+  the package (see [Creator of a Component](#creator-of-a-component)).
+
+What is not given is left out or, for the subject, taken from the derivation as
+before. Nothing is derived: the name of a derivation is not split into a name
+and a version, and the creator of the SBOM is not used as the creator of its
+subject.
+
 ## Options
 
 `buildBom` accepts options as an attribute set. All attributes are optional:
@@ -227,6 +266,9 @@ Metadata](#dependencies-without-metadata)) or has no homepage has no
 - `inferFromSameSource`: boolean flag to use the metadata of a package in
   `packageSets` that is built from the same source as a dependency. Enabled by
   default.
+- `timestamp`, `creator` and `subject`: when the SBOM was compiled, who created
+  it and what it describes. See [The SBOM and its
+  Subject](#the-sbom-and-its-subject).
 - `includeBuildtimeDependencies`: boolean flag to include buildtime dependencies in output.
 - `excludes`: a list of regex patterns of store paths to exclude from the final
   SBOM.

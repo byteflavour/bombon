@@ -45,6 +45,18 @@ pub enum Identification {
 }
 
 impl Derivation {
+    /// Describe the derivation with another name or version than its own.
+    #[must_use]
+    pub fn described_as(mut self, name: Option<&str>, version: Option<&str>) -> Self {
+        if let Some(name) = name {
+            self.pname = Some(name.to_string());
+        }
+        if let Some(version) = version {
+            self.version = Some(version.to_string());
+        }
+        self
+    }
+
     /// Create a `Derivation` from what a build recipe states about a store path.
     ///
     /// This is used for store paths we don't have a package object for. Returns `None` if the
