@@ -69,6 +69,15 @@
 
 ### Fixed
 
+- The dependency graph is connected to what the SBOM describes now. A
+  dependency was only included if both sides are components, so everything a
+  derivation refers to through a store path that is not a component (e.g. the
+  unit files and the configuration of a NixOS system) was not connected to it.
+  Such a store path is now followed to the components it refers to in turn.
+  This changes what a dependency means: a component depends on another one
+  directly or through store paths that are not part of the SBOM. Buildtime
+  dependencies are not affected.
+- What the SBOM describes now depends on the `extraPaths`.
 - Components that describe a derivation are not deduplicated by their PURL
   anymore. The PURL only consists of the name and the version, so all but one
   output of a derivation with multiple outputs (e.g. `out`, `bin` and `dev`)

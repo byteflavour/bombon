@@ -249,31 +249,48 @@ impl CycloneDXDependencies {
     /// Edges are restricted to refs that actually exist in the final BOM, so the graph stays
     /// valid after filtering and deduplication. Entries are merged by ref so no `dependency_ref`
     /// appears twice.
+    ///
+    /// A runtime reference to a store path that is not in the final BOM is followed to the
+    /// components that store path refers to in turn. Many store paths are not components (e.g.
+    /// the unit files and the configuration of a NixOS system), and what is referred to through
+    /// them would otherwise not be connected to what refers to them.
+    ///
+    /// The target depends on the extra paths: they are part of what the BOM describes although
+    /// the target does not refer to them.
     pub fn assemble(
         components: &CycloneDXComponents,
         target_derivation: &Derivation,
+        extra_paths: &[String],
         runtime_input: &RuntimeInput,
         buildtime_input: &BuildtimeInput,
         include_buildtime_dependencies: bool,
         vendored_dependencies: VendoredDependencies,
     ) -> Self {
+        let target = bom_ref(&target_derivation.path);
         let mut present = components.bom_refs();
-        present.insert(bom_ref(&target_derivation.path));
+        present.insert(target.clone());
 
         let mut graph: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for (path, references) in &runtime_input.references {
+        for path in runtime_input.references.keys() {
             let dependent = bom_ref(path);
             if !present.contains(&dependent) {
                 continue;
             }
-            let entry = graph.entry(dependent).or_default();
-            for reference in references {
-                let dependency = bom_ref(reference);
-                if present.contains(&dependency) {
-                    entry.insert(dependency);
-                }
+            graph
+                .entry(dependent)
+                .or_default()
+                .extend(runtime_dependencies(path, runtime_input, &present));
+        }
+        let of_target = graph.entry(target.clone()).or_default();
+        for extra_path in extra_paths {
+            let extra = bom_ref(extra_path);
+            if present.contains(&extra) {
+                of_target.insert(extra);
+            } else {
+                of_target.extend(runtime_dependencies(extra_path, runtime_input, &present));
             }
         }
+        of_target.remove(&target);
         if include_buildtime_dependencies {
             for derivation in buildtime_input.0.values() {
                 let dependent = bom_ref(&derivation.path);
@@ -318,6 +335,44 @@ impl CycloneDXDependencies {
                 .collect(),
         ))
     }
+}
+
+/// The components a store path depends on at runtime.
+///
+/// These are the store paths it refers to, as far as they are in the final BOM. A store path
+/// that is not is replaced by what it refers to in turn.
+fn runtime_dependencies(
+    store_path: &str,
+    runtime_input: &RuntimeInput,
+    present: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let references = |store_path: &str| {
+        runtime_input
+            .references
+            .get(store_path)
+            .into_iter()
+            .flatten()
+    };
+
+    let dependent = bom_ref(store_path);
+    let mut dependencies = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    let mut pending = references(store_path).collect::<Vec<_>>();
+    while let Some(reference) = pending.pop() {
+        if !visited.insert(reference) {
+            continue;
+        }
+        let dependency = bom_ref(reference);
+        if dependency == dependent {
+            continue;
+        }
+        if present.contains(&dependency) {
+            dependencies.insert(dependency);
+        } else {
+            pending.extend(references(reference));
+        }
+    }
+    dependencies
 }
 
 struct CycloneDXComponent(Component);
@@ -725,6 +780,177 @@ mod tests {
         );
         assert_eq!(origin(file(None))?, expected("file"));
         Ok(())
+    }
+
+    /// The dependency graph of a closure in which only some store paths are components.
+    ///
+    /// `references` is the runtime reference graph. `/nix/store/target` is the target, the
+    /// store paths in `components` are the components.
+    fn graph(
+        references: &[(&str, &[&str])],
+        components: &[&str],
+        extra_paths: &[&str],
+        buildtime: &[(&str, &[&str])],
+    ) -> BTreeMap<String, Vec<String>> {
+        let path = |name: &str| format!("/nix/store/{name}");
+        let runtime_input = RuntimeInput {
+            paths: references.iter().map(|(name, _)| path(name)).collect(),
+            references: references
+                .iter()
+                .map(|(name, refs)| (path(name), refs.iter().map(|r| path(r)).collect()))
+                .collect(),
+        };
+        let buildtime_input = BuildtimeInput(
+            buildtime
+                .iter()
+                .map(|(name, refs)| {
+                    (
+                        path(name),
+                        Derivation {
+                            path: path(name),
+                            build_references: refs.iter().map(|r| path(r)).collect(),
+                            ..Derivation::default()
+                        },
+                    )
+                })
+                .collect(),
+        );
+        let components =
+            CycloneDXComponents::from_derivations(components.iter().map(|name| Derivation {
+                path: path(name),
+                pname: Some((*name).to_string()),
+                version: Some("1".into()),
+                ..Derivation::default()
+            }));
+        let target = Derivation {
+            path: path("target"),
+            ..Derivation::default()
+        };
+        let extra_paths = extra_paths
+            .iter()
+            .map(|name| path(name))
+            .collect::<Vec<_>>();
+
+        CycloneDXDependencies::assemble(
+            &components,
+            &target,
+            &extra_paths,
+            &runtime_input,
+            &buildtime_input,
+            !buildtime.is_empty(),
+            VendoredDependencies::new(),
+        )
+        .0
+        .0
+        .into_iter()
+        .map(|dependency| (dependency.dependency_ref, dependency.dependencies))
+        .collect()
+    }
+
+    #[test]
+    fn runtime_references_through_store_paths_that_are_not_components() {
+        let graph = graph(
+            &[
+                // A unit and the configuration it is started with are not components.
+                ("target", &["unit", "kernel"]),
+                ("unit", &["server", "config"]),
+                ("config", &["plugin"]),
+                ("server", &["library"]),
+                ("plugin", &[]),
+                ("library", &[]),
+                ("kernel", &[]),
+            ],
+            &["server", "plugin", "library", "kernel"],
+            &[],
+            &[],
+        );
+
+        // What is referred to directly is kept, what is referred to through the unit and its
+        // configuration is added.
+        assert_eq!(graph["target"], ["kernel", "plugin", "server"]);
+        // A component ends it: the target does not depend on the library of the server.
+        assert_eq!(graph["server"], ["library"]);
+        // Every component is a node, also without dependencies.
+        assert!(graph["plugin"].is_empty());
+        assert_eq!(graph.len(), 5);
+        assert!(!graph.contains_key("unit"));
+    }
+
+    #[test]
+    fn runtime_references_back_and_in_circles() {
+        let graph = graph(
+            &[
+                ("target", &["a"]),
+                // The wrapper of a refers back to a.
+                ("a", &["wrapper"]),
+                ("wrapper", &["a", "b"]),
+                // Two store paths that are not components refer to each other.
+                ("b", &["x"]),
+                ("x", &["y"]),
+                ("y", &["x", "c"]),
+                ("c", &[]),
+                // Nothing refers to d and d refers to nothing.
+                ("d", &[]),
+            ],
+            &["a", "b", "c", "d"],
+            &[],
+            &[],
+        );
+
+        assert_eq!(graph["a"], ["b"]);
+        assert_eq!(graph["b"], ["c"]);
+        assert!(graph["d"].is_empty());
+        assert!(
+            graph
+                .iter()
+                .all(|(dependent, dependencies)| !dependencies.contains(dependent))
+        );
+    }
+
+    #[test]
+    fn target_depends_on_extra_paths() {
+        let graph = graph(
+            &[
+                ("target", &[]),
+                ("extra", &["a"]),
+                // An extra path that is not a component, like an image without a version.
+                ("image", &["layer"]),
+                ("layer", &["b", "target"]),
+                ("a", &[]),
+                ("b", &[]),
+            ],
+            &["extra", "a", "b"],
+            &["extra", "image"],
+            &[],
+        );
+
+        assert_eq!(graph["target"], ["b", "extra"]);
+        assert_eq!(graph["extra"], ["a"]);
+    }
+
+    #[test]
+    fn buildtime_references_are_direct_only() {
+        let graph = graph(
+            &[("target", &["a"]), ("a", &[]), ("compiler", &[])],
+            &["a", "compiler"],
+            &[],
+            // The build environment is not a component. What it is made of is not added.
+            &[("a", &["environment", "a"]), ("environment", &["compiler"])],
+        );
+
+        assert!(graph["a"].is_empty());
+
+        let graph = graph_with_direct_build_input();
+        assert_eq!(graph["a"], ["compiler"]);
+    }
+
+    fn graph_with_direct_build_input() -> BTreeMap<String, Vec<String>> {
+        graph(
+            &[("target", &["a"]), ("a", &[]), ("compiler", &[])],
+            &["a", "compiler"],
+            &[],
+            &[("a", &["compiler"])],
+        )
     }
 
     #[test]
