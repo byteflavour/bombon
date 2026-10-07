@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
-use crate::transform::transform;
+use crate::transform::{Options, transform};
 
 #[derive(Parser)]
 pub struct Cli {
@@ -47,16 +47,16 @@ pub struct Cli {
 
 impl Cli {
     pub fn call(self) -> Result<()> {
-        transform(
-            self.include_buildtime_dependencies,
-            &self.exclude,
-            &self.serial_number_seed,
-            &self.recipes,
-            &self.same_source_metadata,
-            &self.target,
-            &self.buildtime_input,
-            &self.runtime_input,
-            &self.output,
-        )
+        transform(&Options {
+            include_buildtime_dependencies: self.include_buildtime_dependencies,
+            exclude: self.exclude,
+            serial_number_seed: self.serial_number_seed,
+            recipes: self.recipes,
+            same_source_metadata: self.same_source_metadata,
+            target: self.target,
+            buildtime_input: self.buildtime_input,
+            runtime_input: self.runtime_input,
+            output: self.output,
+        })
     }
 }
