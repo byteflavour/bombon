@@ -88,10 +88,14 @@ let
       "outputHash"
     ] drv)
     // {
-      path = drv.outPath;
+      # The store paths are only used to identify the derivations. Their string context is
+      # discarded so that the derivations do not have to be built to generate the SBOM.
+      path = builtins.unsafeDiscardStringContext drv.outPath;
       patches = lib.flatten (drv.patches or [ ]);
       # The store paths of this derivation's direct build-time dependencies, so the transformer can emit build-time `dependsOn` edges.
-      buildReferences = lib.unique (map (o: o.outPath) (lib.concatLists (drvDeps drv)));
+      buildReferences = lib.unique (
+        map (o: builtins.unsafeDiscardStringContext o.outPath) (lib.concatLists (drvDeps drv))
+      );
     }
     // lib.optionalAttrs (drv ? src && drv.src ? urls) {
       src = {

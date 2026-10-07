@@ -26,6 +26,8 @@
 
 ### Changed
 
+- The packages a SBOM is generated for are not built anymore just to generate
+  the SBOM. Only the runtime closure, the patches and the vendored SBOMs are.
 - Dependencies that are only referred to in a string (e.g. `"${pkgs.jq}/bin/jq"`)
   are now described by what their build recipe (`.drv` file) states instead of
   by what can be guessed from their store path. Their name, version, patches
