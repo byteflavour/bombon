@@ -1,5 +1,6 @@
 use serde::Deserialize;
 
+use crate::buildtime_input::SameSourceMetadata;
 use crate::hash::SriHash;
 use crate::recipe::{RecipeIndex, RecipeOutput};
 
@@ -33,6 +34,9 @@ pub enum Identification {
     Package,
     /// The build recipe states the name and the version.
     Recipe,
+    /// The build recipe states the name and the version. The metadata is that of a package that
+    /// is built from the same source.
+    RecipeWithSameSource,
     /// The version is split off the name stated by the build recipe.
     Name,
 }
@@ -46,6 +50,7 @@ impl Derivation {
         store_path: &str,
         output: &RecipeOutput,
         recipes: &RecipeIndex,
+        same_source: &SameSourceMetadata,
     ) -> Option<Self> {
         let derivation = Self {
             path: store_path.to_string(),
@@ -54,7 +59,16 @@ impl Derivation {
         };
 
         if let (Some(pname), Some(version)) = (&output.pname, &output.version) {
+            // What the recipe states is kept. Only the metadata, which a recipe doesn't contain,
+            // is taken from a package that is built from the same source.
+            let meta = same_source.get(&output.recipe).cloned();
             return Some(Self {
+                identification: if meta.is_some() {
+                    Identification::RecipeWithSameSource
+                } else {
+                    Identification::Recipe
+                },
+                meta,
                 name: output.name.clone(),
                 pname: Some(pname.clone()),
                 version: Some(version.clone()),
@@ -66,7 +80,6 @@ impl Derivation {
                     .filter(|src| src.is_download())
                     .map(Src::from_download),
                 patches: output.patches.clone(),
-                identification: Identification::Recipe,
                 ..derivation
             });
         }
@@ -205,7 +218,57 @@ mod tests {
 
     fn from_recipe(recipes: &RecipeIndex, store_path: &str) -> Result<Option<Derivation>> {
         let output = recipes.get(store_path).context("Missing output")?;
-        Ok(Derivation::from_recipe(store_path, output, recipes))
+        Ok(Derivation::from_recipe(
+            store_path,
+            output,
+            recipes,
+            &SameSourceMetadata::default(),
+        ))
+    }
+
+    #[test]
+    fn recipe_with_same_source_metadata() -> Result<()> {
+        let same_source = SameSourceMetadata::from_json(
+            r#"{
+                "/nix/store/a-libssh2.drv": { "meta": { "description": "A library" } },
+                "/nix/store/b-xz.drv": { "meta": { "description": "A tarball" } },
+                "/nix/store/c-wrapper.drv": { "meta": { "description": "A wrapper" } }
+            }"#,
+        )?;
+        let recipes = index(&[
+            ("/nix/store/a-libssh2.drv", LIBSSH2.into()),
+            ("/nix/store/b-xz.drv", XZ_TARBALL.into()),
+            (
+                "/nix/store/c-wrapper.drv",
+                HELLO.replace("\\\"pname\\\":\\\"hello\\\",", ""),
+            ),
+        ])?;
+        let from_recipe = |path: &str| -> Result<Derivation> {
+            let output = recipes.get(path).context("Missing output")?;
+            Derivation::from_recipe(path, output, &recipes, &same_source)
+                .context("Missing derivation")
+        };
+
+        // The metadata is added to what the recipe states.
+        let package =
+            from_recipe("/nix/store/b6dac7q3270fhwxr0glxi35hrhw2v97r-libssh2-1.11.1-dev")?;
+        assert_eq!(package.identification, Identification::RecipeWithSameSource);
+        assert_eq!(package.pname.as_deref(), Some("libssh2"));
+        assert_eq!(package.version.as_deref(), Some("1.11.1"));
+        assert_eq!(package.patches.len(), 1);
+        assert_eq!(
+            package.meta.and_then(|meta| meta.description).as_deref(),
+            Some("A library")
+        );
+
+        // Neither files nor packages whose version is split off a name get any.
+        let file = from_recipe("/nix/store/lih1c5qn71i56blnj7bq7jhnm3k1z4q9-xz-5.8.3.tar.gz")?;
+        assert!(file.is_file);
+        assert!(file.meta.is_none());
+        let named = from_recipe("/nix/store/nm7p8wxflggcwxfzayhysq4z6a1wg373-hello-2.12.3")?;
+        assert_eq!(named.identification, Identification::Name);
+        assert!(named.meta.is_none());
+        Ok(())
     }
 
     #[test]

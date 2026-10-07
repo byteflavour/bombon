@@ -159,6 +159,51 @@ let
           and any(.dependencies[]; .dependsOn | index($ref))
       '';
     }
+
+    # Metadata for a dependency that is only referred to in a string
+    {
+      name = "metadata-from";
+      drv = writeText "metadata-from-1.0" "${jq}/bin/jq";
+      options = {
+        metadataFrom = [ jq ];
+      };
+      assertion = ''
+        .components[] | select(.name == "jq")
+        | (.licenses | length > 0) and (.properties | any(.name == "bombon:origin" and .value == "package"))
+      '';
+    }
+
+    # Packages for build recipes are looked up in a package set
+    {
+      name = "package-sets";
+      drv = writeText "package-sets-1.0" "${jq}/bin/jq";
+      options = {
+        packageSets = [ pkgs ];
+      };
+      # jq is looked up, oniguruma is found because jq depends on it
+      assertion = ''
+        [ .components[] | select(.name == "jq" or .name == "oniguruma") ]
+        | length >= 2 and all(.licenses | length > 0)
+      '';
+    }
+
+    # Metadata of a package that is built from the same source
+    {
+      name = "same-source";
+      drv = writeText "same-source-1.0" "${
+        jq.overrideAttrs (_: {
+          SOME_FLAG = "1";
+        })
+      }/bin/jq";
+      options = {
+        packageSets = [ pkgs ];
+      };
+      assertion = ''
+        .components[] | select(.name == "jq")
+        | (.licenses | length > 0)
+          and (.properties | any(.name == "bombon:origin" and .value == "recipe+same-source-package"))
+      '';
+    }
   ];
 
   cycloneDxVersion = "1.7";

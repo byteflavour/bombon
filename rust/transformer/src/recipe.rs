@@ -213,6 +213,8 @@ impl<'a> Parser<'a> {
 /// What a recipe states about one of its outputs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RecipeOutput {
+    /// The store path of the recipe.
+    pub recipe: String,
     /// The name of the output, e.g. `out` or `dev`.
     pub output: String,
     pub name: Option<String>,
@@ -287,6 +289,7 @@ impl RecipeIndex {
                 index
                     .entry(output.path.clone())
                     .or_insert_with(|| RecipeOutput {
+                        recipe: recipe_path.clone(),
                         output: output.name.clone(),
                         name: recipe.string("name"),
                         pname: recipe.string("pname"),
@@ -424,6 +427,7 @@ pub mod tests {
             .get("/nix/store/b6dac7q3270fhwxr0glxi35hrhw2v97r-libssh2-1.11.1-dev")
             .context("Missing output")?;
         assert_eq!(dev.output, "dev");
+        assert_eq!(dev.recipe, "/nix/store/b-libssh2.drv");
         assert_eq!(dev.pname.as_deref(), Some("libssh2"));
         assert_eq!(dev.fixed, None);
         assert!(!dev.is_download());

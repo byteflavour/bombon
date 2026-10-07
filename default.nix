@@ -5,9 +5,14 @@ pkgs.lib.makeScope pkgs.newScope (self: {
   # It's useful to have these exposed for debugging. However, they are not a
   # public interface.
   __internal = {
-    buildtimeDependencies = self.callPackage ./nix/buildtime-dependencies.nix { };
+    buildtimeDependencies = self.callPackage ./nix/buildtime-dependencies.nix {
+      inherit (self.__internal) recipeClosure;
+    };
     runtimeDependencies = self.callPackage ./nix/runtime-dependencies.nix { };
-    recipes = self.callPackage ./nix/recipes.nix { };
+    recipeClosure = self.callPackage ./nix/recipe-closure.nix { };
+    recipes = self.callPackage ./nix/recipes.nix {
+      inherit (self.__internal) recipeClosure;
+    };
     transformerWithoutSbom = self.callPackage ./nix/packages/transformer.nix { };
   };
 

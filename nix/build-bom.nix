@@ -11,11 +11,18 @@
 drv:
 {
   extraPaths ? [ ],
+  metadataFrom ? [ ],
+  packageSets ? [ ],
+  inferFromSameSource ? true,
   includeBuildtimeDependencies ? false,
   excludes ? [ ],
 }:
 
 let
+  buildtime = buildtimeDependencies drv extraPaths {
+    inherit metadataFrom packageSets inferFromSameSource;
+  };
+
   args =
     lib.optionals includeBuildtimeDependencies [
       "--include-buildtime-dependencies"
@@ -34,7 +41,8 @@ runCommand "${drv.name}.cdx.json"
       ${toString args} \
       --serial-number-seed "$out" \
       --recipes ${recipes drv extraPaths} \
-      ${buildtimeDependencies drv extraPaths} \
+      --same-source-metadata ${buildtime.sameSourceMetadata} \
+      ${buildtime.packages} \
       ${runtimeDependencies drv extraPaths} \
       tmp.cdx.json
 

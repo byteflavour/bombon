@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use itertools::Itertools;
 use regex::RegexSet;
 
-use crate::buildtime_input::BuildtimeInput;
+use crate::buildtime_input::{BuildtimeInput, SameSourceMetadata};
 use crate::cyclonedx::{
     CycloneDXBom, CycloneDXComponents, CycloneDXDependencies, VendoredDependencies,
 };
@@ -20,6 +20,7 @@ pub fn transform(
     exclude: &[String],
     serial_number_seed: &str,
     recipes_path: &Path,
+    same_source_metadata_path: &Path,
     target_path: &str,
     buildtime_input_path: &Path,
     runtime_input_path: &Path,
@@ -36,8 +37,10 @@ pub fn transform(
 
     let runtime_input = RuntimeInput::from_file(runtime_input_path)?;
     let recipes = RecipeIndex::from_file(recipes_path)?;
+    let same_source = SameSourceMetadata::from_file(same_source_metadata_path)?;
 
-    let runtime_derivations = runtime_derivations(&runtime_input, &buildtime_input, &recipes);
+    let runtime_derivations =
+        runtime_derivations(&runtime_input, &buildtime_input, &recipes, &same_source);
 
     let buildtime_derivations = buildtime_input
         .0
@@ -105,12 +108,13 @@ fn runtime_derivations<'a>(
     runtime_input: &'a RuntimeInput,
     buildtime_input: &'a BuildtimeInput,
     recipes: &'a RecipeIndex,
+    same_source: &'a SameSourceMetadata,
 ) -> impl Iterator<Item = Derivation> + 'a {
     runtime_input.paths.iter().filter_map(|store_path| {
         buildtime_input.0.get(store_path).cloned().or_else(|| {
-            recipes
-                .get(store_path)
-                .and_then(|output| Derivation::from_recipe(store_path, output, recipes))
+            recipes.get(store_path).and_then(|output| {
+                Derivation::from_recipe(store_path, output, recipes, same_source)
+            })
         })
     })
 }
@@ -155,9 +159,11 @@ mod tests {
             LIBSSH2.to_string(),
         )]))?;
 
-        let derivations = runtime_derivations(&runtime_input, &buildtime_input, &recipes)
-            .map(|d| (d.path.clone(), d))
-            .collect::<BTreeMap<_, _>>();
+        let same_source = SameSourceMetadata::default();
+        let derivations =
+            runtime_derivations(&runtime_input, &buildtime_input, &recipes, &same_source)
+                .map(|d| (d.path.clone(), d))
+                .collect::<BTreeMap<_, _>>();
 
         // The package object takes precedence over the recipe.
         assert_eq!(

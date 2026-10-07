@@ -3,6 +3,7 @@
   writeText,
   runCommand,
   jq,
+  recipeClosure,
 }:
 
 let
@@ -45,9 +46,9 @@ let
   #
   # All outputs are included because they have different outPaths
   buildtimeDerivations =
-    drv0:
+    drvs:
     builtins.genericClosure {
-      startSet = map wrap (drvOutputs drv0);
+      startSet = map wrap (lib.concatMap drvOutputs drvs);
       operator = item: map wrap (lib.concatLists (drvDeps item.drv));
     };
 
@@ -55,25 +56,8 @@ let
   optionalGetAttrs =
     names: attrs: lib.genAttrs (builtins.filter (x: lib.hasAttr x attrs) names) (name: attrs.${name});
 
-  # The files of the patches of a derivation.
-  #
-  # Usually the patches are a list of files but some derivations group them, e.g. in an attrset.
-  patchFiles =
-    patches:
-    if lib.isList patches then
-      lib.concatMap patchFiles patches
-    else if lib.isStringLike patches then
-      [ patches ]
-    else if lib.isAttrs patches then
-      lib.concatMap patchFiles (lib.attrValues patches)
-    else
-      [ ];
-
-  # Retrieve only the required fields from a derivation.
-  #
-  # Also renames outPath so that builtins.toJSON actually emits JSON and not
-  # only the nix store path.
-  fields =
+  # The meta attributes of a derivation with its license normalised to SPDX.
+  normalisedMeta =
     drv:
     let
       # A license that is a hand-rolled attrset or a plain string does not carry `licenseType`, so
@@ -107,13 +91,33 @@ let
           "${bracket license.license}${license.operator}"
         else
           "LicenseRef-unknown";
-
-      meta = lib.recursiveUpdate drv.meta (
-        lib.optionalAttrs (drv.meta ? license) {
-          license = if !(lib.isList drv.meta.license) then toSPDX drv.meta.license else drv.meta.license;
-        }
-      );
     in
+    lib.recursiveUpdate drv.meta (
+      lib.optionalAttrs (drv.meta ? license) {
+        license = if !(lib.isList drv.meta.license) then toSPDX drv.meta.license else drv.meta.license;
+      }
+    );
+
+  # The files of the patches of a derivation.
+  #
+  # Usually the patches are a list of files but some derivations group them, e.g. in an attrset.
+  patchFiles =
+    patches:
+    if lib.isList patches then
+      lib.concatMap patchFiles patches
+    else if lib.isStringLike patches then
+      [ patches ]
+    else if lib.isAttrs patches then
+      lib.concatMap patchFiles (lib.attrValues patches)
+    else
+      [ ];
+
+  # Retrieve only the required fields from a derivation.
+  #
+  # Also renames outPath so that builtins.toJSON actually emits JSON and not
+  # only the nix store path.
+  fields =
+    drv:
     (optionalGetAttrs [
       "name"
       "pname"
@@ -143,18 +147,104 @@ let
       vendoredSbom = drv.bombonVendoredSbom.outPath;
     }
     // lib.optionalAttrs (drv ? meta) {
-      inherit meta;
+      meta = normalisedMeta drv;
     };
+
+  # The name of the package a recipe builds, taken from the file name of the recipe.
+  recipeName =
+    recipe:
+    (builtins.parseDrvName (lib.removeSuffix ".drv" (builtins.substring 33 (-1) (baseNameOf recipe))))
+    .name;
+
+  recipeOf = drv: builtins.unsafeDiscardStringContext drv.drvPath;
+
+  # The packages that are found in the package sets under the name of a recipe.
+  #
+  # Looking up a package can fail, e.g. because it is marked as insecure. Such packages are
+  # skipped.
+  candidates =
+    packageSets: recipe:
+    let
+      name = recipeName recipe;
+    in
+    lib.concatMap (
+      set:
+      let
+        candidate = builtins.tryEval (
+          let
+            drv = set.${name};
+            recipe = recipeOf drv;
+          in
+          # The recipe is forced here because that is what fails for such packages.
+          if lib.isDerivation drv then
+            builtins.seq recipe {
+              inherit drv recipe;
+            }
+          else
+            null
+        );
+      in
+      lib.optional (set ? ${name} && candidate.success && candidate.value != null) candidate.value
+    ) packageSets;
+
+  # Whether a package is built from a source that the recipe is built from as well.
+  hasSameSource =
+    recipe: drv:
+    let
+      result = builtins.tryEval (
+        drv ? src && lib.isDerivation drv.src && lib.elem (recipeOf drv.src) recipe.inputRecipes
+      );
+    in
+    result.success && result.value;
 
 in
 
+# This returns two JSON files:
+#
+#  - packages: what is known about the packages that are found by following the attributes of
+#    drv, extraPaths and metadataFrom, and by looking up the build recipes of drv in packageSets.
+#  - sameSourceMetadata: the metadata of packages in packageSets that are not built by one of the
+#    build recipes of drv but from the same source as one of them, by the store path of that
+#    recipe.
 drv: extraPaths:
+{
+  metadataFrom ? [ ],
+  packageSets ? [ ],
+  inferFromSameSource ? true,
+}:
 
 let
 
-  allDrvs = [ drv ] ++ extraPaths;
+  # Only read the build recipes if there is something to look them up in.
+  lookups =
+    if packageSets == [ ] then
+      [ ]
+    else
+      map (recipe: {
+        inherit recipe;
+        candidates = candidates packageSets recipe.key;
+      }) (recipeClosure drv extraPaths);
 
-  allBuildtimeDerivations = lib.flatten (map buildtimeDerivations allDrvs);
+  # The packages that are built by exactly one of the build recipes.
+  found = lib.concatMap (
+    lookup: map (c: c.drv) (lib.filter (c: c.recipe == lookup.recipe.key) lookup.candidates)
+  ) lookups;
+
+  allBuildtimeDerivations = buildtimeDerivations ([ drv ] ++ extraPaths ++ metadataFrom ++ found);
+
+  knownRecipes = lib.genAttrs (map (item: recipeOf item.drv) allBuildtimeDerivations) (_: true);
+
+  sameSource = lib.listToAttrs (
+    lib.concatMap (
+      lookup:
+      let
+        packages = lib.filter (c: hasSameSource lookup.recipe c.drv && c.drv ? meta) lookup.candidates;
+      in
+      lib.optional (!(knownRecipes ? ${lookup.recipe.key}) && packages != [ ]) (
+        lib.nameValuePair lookup.recipe.key { meta = normalisedMeta (lib.head packages).drv; }
+      )
+    ) (lib.optionals inferFromSameSource lookups)
+  );
 
   unformattedJson = writeText "${drv.name}-unformatted-buildtime-dependencies.json" (
     builtins.toJSON (map (item: (fields item.drv)) allBuildtimeDerivations)
@@ -162,7 +252,11 @@ let
 
 in
 
-# Format the json so that the transformer can better report where errors occur
-runCommand "${drv.name}-buildtime-dependencies.json" { } ''
-  ${jq}/bin/jq < ${unformattedJson} > "$out"
-''
+{
+  # Format the json so that the transformer can better report where errors occur
+  packages = runCommand "${drv.name}-buildtime-dependencies.json" { } ''
+    ${jq}/bin/jq < ${unformattedJson} > "$out"
+  '';
+
+  sameSourceMetadata = writeText "${drv.name}-same-source-metadata.json" (builtins.toJSON sameSource);
+}

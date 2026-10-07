@@ -22,6 +22,7 @@ use cyclonedx_bom::models::external_reference::{
 use cyclonedx_bom::models::hash::{Hash, HashAlgorithm, HashValue, Hashes};
 use cyclonedx_bom::models::license::{License, LicenseChoice, Licenses};
 use cyclonedx_bom::models::metadata::Metadata;
+use cyclonedx_bom::models::property::{Properties, Property};
 use cyclonedx_bom::models::tool::Tools;
 use itertools::Itertools;
 use sha2::{Digest, Sha256};
@@ -341,6 +342,10 @@ impl CycloneDXComponent {
             Some(bom_ref(&derivation.path)),
         );
         component.scope = Some(Scope::Required);
+        component.properties = Some(Properties(vec![Property::new(
+            "bombon:origin",
+            origin(derivation.identification, derivation.is_file),
+        )]));
 
         let mut external_references = Vec::new();
 
@@ -395,7 +400,10 @@ impl CycloneDXComponent {
                     &derivation.patches,
                     // The patches named by a build recipe are not necessarily available. They
                     // are listed nonetheless.
-                    derivation.identification == Identification::Recipe,
+                    matches!(
+                        derivation.identification,
+                        Identification::Recipe | Identification::RecipeWithSameSource
+                    ),
                 )),
                 notes: None,
             });
@@ -476,6 +484,17 @@ fn cpes_to_evidence(possible_cpes: &[derivation::Cpe]) -> Option<ComponentEviden
         occurrences: None,
         callstack: None,
     })
+}
+
+/// Where the facts about a component come from.
+fn origin(identification: Identification, is_file: bool) -> &'static str {
+    match identification {
+        _ if is_file => "file",
+        Identification::Package => "package",
+        Identification::Recipe => "recipe",
+        Identification::RecipeWithSameSource => "recipe+same-source-package",
+        Identification::Name => "name",
+    }
 }
 
 /// Record that the version of a component was split off a name.
@@ -667,6 +686,81 @@ mod tests {
             identification: Identification::Recipe,
             ..Derivation::default()
         }
+    }
+
+    #[test]
+    fn origins() -> Result<()> {
+        let origin = |derivation: Derivation| -> Result<Value> {
+            Ok(component(derivation)?["properties"].clone())
+        };
+        let expected =
+            |value: &str| serde_json::json!([{ "name": "bombon:origin", "value": value }]);
+
+        assert_eq!(
+            origin(Derivation {
+                identification: Identification::Package,
+                ..package()
+            })?,
+            expected("package")
+        );
+        assert_eq!(origin(package())?, expected("recipe"));
+        assert_eq!(
+            origin(Derivation {
+                identification: Identification::RecipeWithSameSource,
+                ..package()
+            })?,
+            expected("recipe+same-source-package")
+        );
+        assert_eq!(
+            origin(Derivation {
+                identification: Identification::Name,
+                ..package()
+            })?,
+            expected("name")
+        );
+        assert_eq!(origin(file(None))?, expected("file"));
+        Ok(())
+    }
+
+    #[test]
+    fn vendored_components_have_no_origin() -> Result<()> {
+        let directory = std::env::temp_dir().join(format!(
+            "bombon-transformer-test-vendored-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory)?;
+        fs::write(
+            directory.join("serde.cdx.json"),
+            r#"{
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.5",
+                "version": 1,
+                "components": [
+                    { "type": "library", "name": "serde", "version": "1.0.219", "bom-ref": "pkg:cargo/serde@1.0.219" }
+                ]
+            }"#,
+        )?;
+        let mut components = CycloneDXComponents::from_derivations([package()]);
+        let extended = components.extend_from_directory(&directory, &package().path);
+        fs::remove_dir_all(&directory)?;
+        extended?;
+
+        let bom = CycloneDXBom(Bom {
+            components: Some(components.into()),
+            ..Bom::default()
+        });
+        let json: Value = serde_json::from_slice(&bom.serialize()?)?;
+        let components = json["components"]
+            .as_array()
+            .context("Missing components")?;
+        assert_eq!(components.len(), 2);
+        for component in components {
+            assert_eq!(
+                component.get("properties").is_some(),
+                component["name"] == "libssh2"
+            );
+        }
+        Ok(())
     }
 
     #[test]
