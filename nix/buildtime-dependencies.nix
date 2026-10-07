@@ -55,6 +55,20 @@ let
   optionalGetAttrs =
     names: attrs: lib.genAttrs (builtins.filter (x: lib.hasAttr x attrs) names) (name: attrs.${name});
 
+  # The files of the patches of a derivation.
+  #
+  # Usually the patches are a list of files but some derivations group them, e.g. in an attrset.
+  patchFiles =
+    patches:
+    if lib.isList patches then
+      lib.concatMap patchFiles patches
+    else if lib.isStringLike patches then
+      [ patches ]
+    else if lib.isAttrs patches then
+      lib.concatMap patchFiles (lib.attrValues patches)
+    else
+      [ ];
+
   # Retrieve only the required fields from a derivation.
   #
   # Also renames outPath so that builtins.toJSON actually emits JSON and not
@@ -111,7 +125,7 @@ let
       # The store paths are only used to identify the derivations. Their string context is
       # discarded so that the derivations do not have to be built to generate the SBOM.
       path = builtins.unsafeDiscardStringContext drv.outPath;
-      patches = lib.flatten (drv.patches or [ ]);
+      patches = patchFiles (drv.patches or [ ]);
       # The store paths of this derivation's direct build-time dependencies, so the transformer can emit build-time `dependsOn` edges.
       buildReferences = lib.unique (
         map (o: builtins.unsafeDiscardStringContext o.outPath) (lib.concatLists (drvDeps drv))
