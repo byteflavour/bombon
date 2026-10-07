@@ -209,6 +209,20 @@ of it.
 The buildtime dependencies that are added with `includeBuildtimeDependencies`
 are only the direct build inputs of a component.
 
+### Completeness
+
+The SBOM states for every component, and for what it describes, how complete its
+dependencies are. This is what BSI TR-03183-2 requires, and it is given as
+`compositions`.
+
+Bombon does not know whether the dependencies of a component are complete. It
+knows the store paths a store path refers to, but not what a component contains
+without referring to it, like vendored or statically linked code. The dependencies
+are thus stated as `unknown`, and never as `complete`.
+
+They are stated as `incomplete` for a component that depends on something that was
+removed with `excludes`, directly or through store paths that are not components.
+
 ## Creator of a Component
 
 BSI TR-03183-2 requires every component to name its creator: an email address
@@ -287,7 +301,8 @@ subject.
   Subject](#the-sbom-and-its-subject).
 - `includeBuildtimeDependencies`: boolean flag to include buildtime dependencies in output.
 - `excludes`: a list of regex patterns of store paths to exclude from the final
-  SBOM.
+  SBOM. The dependencies of what depends on them are stated as incomplete, see
+  [Completeness](#completeness).
 
 Example:
 

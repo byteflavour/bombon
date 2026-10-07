@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -74,10 +75,9 @@ pub fn transform(options: &Options) -> Result<()> {
     let set = RegexSet::new(&options.exclude)
         .context("Failed to build regex set from exclude patterns")?;
 
-    let all_derivations = all_derivations
-        .filter(is_component)
-        // Filter out derivations that match one of the exclude patterns.
-        .filter(|derivation| !set.is_match(&derivation.path));
+    // Filter out derivations that match one of the exclude patterns. They are remembered as
+    // what depends on them lacks a dependency.
+    let (all_derivations, excluded) = without_excluded(all_derivations.filter(is_component), &set);
 
     let mut components = CycloneDXComponents::from_derivations(all_derivations);
 
@@ -97,9 +97,11 @@ pub fn transform(options: &Options) -> Result<()> {
         &components,
         &target_derivation,
         &options.extra_paths,
+        &excluded,
         &runtime_input,
-        &buildtime_input,
-        options.include_buildtime_dependencies,
+        options
+            .include_buildtime_dependencies
+            .then_some(&buildtime_input),
         vendored_dependencies,
     );
 
@@ -162,6 +164,24 @@ fn buildtime_derivations<'a>(
 }
 
 /// Whether a derivation is to be included in the SBOM as a component.
+/// Split off the derivations that match one of the exclude patterns.
+///
+/// Returns the remaining derivations and the store paths of the excluded ones.
+fn without_excluded(
+    derivations: impl Iterator<Item = Derivation>,
+    exclude: &RegexSet,
+) -> (Vec<Derivation>, BTreeSet<String>) {
+    let (excluded, derivations): (Vec<_>, Vec<_>) =
+        derivations.partition(|derivation| exclude.is_match(&derivation.path));
+    (
+        derivations,
+        excluded
+            .into_iter()
+            .map(|derivation| derivation.path)
+            .collect(),
+    )
+}
+
 fn is_component(derivation: &Derivation) -> bool {
     // Filter out all doc and man outputs.
     let is_documentation = matches!(derivation.output_name.as_deref(), Some("doc" | "man"));
@@ -176,6 +196,39 @@ mod tests {
     use super::*;
     use crate::derivation::Identification;
     use crate::recipe::tests::LIBSSH2;
+
+    #[test]
+    fn excluded_components() -> Result<()> {
+        let derivation =
+            |path: &str, version: Option<&str>, output_name: Option<&str>| Derivation {
+                path: path.into(),
+                version: version.map(Into::into),
+                output_name: output_name.map(Into::into),
+                ..Derivation::default()
+            };
+        let exclude = RegexSet::new(["service"])?;
+
+        let (remaining, excluded) = without_excluded(
+            [
+                derivation("/nix/store/a-service-1.0", Some("1.0"), None),
+                derivation("/nix/store/b-service-1.0-doc", Some("1.0"), Some("doc")),
+                derivation("/nix/store/c-unit-service.service", None, None),
+                derivation("/nix/store/d-library-2.0", Some("2.0"), None),
+            ]
+            .into_iter()
+            .filter(is_component),
+            &exclude,
+        );
+
+        // Only what would be a component is excluded. A unit and documentation are none anyway.
+        assert_eq!(
+            excluded,
+            BTreeSet::from(["/nix/store/a-service-1.0".into()])
+        );
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].path, "/nix/store/d-library-2.0");
+        Ok(())
+    }
 
     #[test]
     fn sources_of_runtime_derivations() -> Result<()> {

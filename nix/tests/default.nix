@@ -34,6 +34,11 @@ let
           and (.properties | any(.name == "bombon:origin"))
           and (.properties | all(.name != "bombon:manufacturer-url"))
         )
+        # Whether the dependencies are complete is not known, for what the SBOM describes and
+        # for every component
+        and (.compositions | length == 1 and .[0].aggregate == "unknown")
+        and (.compositions[0].dependencies | sort)
+          == ([ .metadata.component."bom-ref", .components[]."bom-ref" ] | unique)
       '';
     }
     # What is given about the SBOM and its subject
@@ -234,6 +239,25 @@ let
         | any($jq[]; . as $ref | $graph[$subject] | index($ref))
         and all(.components[]; ."bom-ref" as $ref | $reachable | index($ref))
         and all(.components[]; .name != "unit")
+      '';
+    }
+
+    # An excluded dependency: what refers to it, also through a store path that is not a
+    # component, is known to lack a dependency
+    {
+      name = "excluded-dependency";
+      drv = writeText "excluded-dependency-1.0" "${writeText "unit" "${jq}/bin/jq"}";
+      options = {
+        excludes = [ "jq.+bin" ];
+      };
+      assertion = ''
+        .metadata.component."bom-ref" as $subject
+        | (.compositions | map({ (.aggregate): .dependencies }) | add) as $completeness
+        | all(.components[]; ."bom-ref" | test("jq.+bin") | not)
+        and (.compositions | map(.aggregate)) == [ "unknown", "incomplete" ]
+        and $completeness.incomplete == [ $subject ]
+        and ($completeness.unknown | sort) == ([ .components[]."bom-ref" ] | sort)
+        and (.components | length > 0)
       '';
     }
 

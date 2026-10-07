@@ -9,12 +9,13 @@ use cyclonedx_bom::external_models::normalized_string::NormalizedString;
 use cyclonedx_bom::external_models::spdx::SpdxExpression;
 use cyclonedx_bom::external_models::uri::{Purl, Uri};
 use cyclonedx_bom::models::attached_text::AttachedText;
-use cyclonedx_bom::models::bom::{Bom, UrnUuid};
+use cyclonedx_bom::models::bom::{Bom, BomReference, UrnUuid};
 use cyclonedx_bom::models::code::{Diff, Patch, PatchClassification, Patches};
 use cyclonedx_bom::models::component::{Classification, Component, Components, Cpe, Scope};
 use cyclonedx_bom::models::component::{
     ComponentEvidence, ConfidenceScore, Identity, IdentityField, Method, Methods, Pedigree,
 };
+use cyclonedx_bom::models::composition::{AggregateType, Composition, Compositions};
 use cyclonedx_bom::models::dependency::{Dependencies, Dependency};
 use cyclonedx_bom::models::external_reference::{
     self, ExternalReference, ExternalReferenceType, ExternalReferences,
@@ -64,7 +65,10 @@ impl CycloneDXBom {
         dependencies: CycloneDXDependencies,
         serial_number_seed: &str,
     ) -> Self {
+        let mut described = components.bom_refs();
+        described.insert(bom_ref(&target.path));
         Self(Bom {
+            compositions: Some(completeness(described, &dependencies.1)),
             components: Some(components.into()),
             dependencies: (!dependencies.0.0.is_empty()).then_some(dependencies.0),
             metadata: Some(metadata_from_derivation(target)),
@@ -81,6 +85,34 @@ impl CycloneDXBom {
 ///
 /// This data is hashed with SHA256 and the first 16 bytes are used to create a UUID to serve as a
 /// serial number.
+/// State how complete the dependencies of every component are.
+///
+/// Whether they are complete is not known: the store paths a store path refers to are, but not
+/// what a component contains without referring to it. They are known to be incomplete where a
+/// dependency was excluded.
+fn completeness(described: BTreeSet<String>, incomplete: &BTreeSet<String>) -> Compositions {
+    let (incomplete, unknown): (Vec<_>, Vec<_>) = described
+        .into_iter()
+        .partition(|reference| incomplete.contains(reference));
+    Compositions(
+        [
+            (AggregateType::Unknown, unknown),
+            (AggregateType::Incomplete, incomplete),
+        ]
+        .into_iter()
+        .filter(|(_, references)| !references.is_empty())
+        .map(|(aggregate, references)| Composition {
+            bom_ref: None,
+            aggregate,
+            assemblies: None,
+            dependencies: Some(references.into_iter().map(BomReference::new).collect()),
+            vulnerabilities: None,
+            signature: None,
+        })
+        .collect(),
+    )
+}
+
 fn derive_serial_number(data: &[u8]) -> UrnUuid {
     let hash = Sha256::digest(data);
     let array: [u8; 32] = hash.into();
@@ -238,7 +270,8 @@ impl VendoredDependencies {
     }
 }
 
-pub struct CycloneDXDependencies(Dependencies);
+/// The dependency graph and the refs whose dependencies are known to be incomplete.
+pub struct CycloneDXDependencies(Dependencies, BTreeSet<String>);
 
 impl CycloneDXDependencies {
     /// Assemble the `CycloneDX` dependency graph. Three sources of edges are combined:
@@ -257,29 +290,40 @@ impl CycloneDXDependencies {
     ///
     /// The target depends on the extra paths: they are part of what the BOM describes although
     /// the target does not refer to them.
+    ///
+    /// The dependencies of a ref are incomplete if one of them is an excluded store path. What
+    /// an excluded store path refers to is still followed.
+    ///
+    /// Build-time references are only added if a build-time input is given.
     pub fn assemble(
         components: &CycloneDXComponents,
         target_derivation: &Derivation,
         extra_paths: &[String],
+        excluded: &BTreeSet<String>,
         runtime_input: &RuntimeInput,
-        buildtime_input: &BuildtimeInput,
-        include_buildtime_dependencies: bool,
+        buildtime_input: Option<&BuildtimeInput>,
         vendored_dependencies: VendoredDependencies,
     ) -> Self {
+        let runtime = RuntimeGraph {
+            runtime_input,
+            excluded,
+        };
         let target = bom_ref(&target_derivation.path);
         let mut present = components.bom_refs();
         present.insert(target.clone());
 
         let mut graph: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut incomplete = BTreeSet::new();
         for path in runtime_input.references.keys() {
             let dependent = bom_ref(path);
             if !present.contains(&dependent) {
                 continue;
             }
-            graph
-                .entry(dependent)
-                .or_default()
-                .extend(runtime_dependencies(path, runtime_input, &present));
+            let (dependencies, lacks_excluded) = runtime.dependencies(path, &present);
+            if lacks_excluded {
+                incomplete.insert(dependent.clone());
+            }
+            graph.entry(dependent).or_default().extend(dependencies);
         }
         let of_target = graph.entry(target.clone()).or_default();
         for extra_path in extra_paths {
@@ -287,11 +331,15 @@ impl CycloneDXDependencies {
             if present.contains(&extra) {
                 of_target.insert(extra);
             } else {
-                of_target.extend(runtime_dependencies(extra_path, runtime_input, &present));
+                let (dependencies, lacks_excluded) = runtime.dependencies(extra_path, &present);
+                if lacks_excluded || excluded.contains(extra_path) {
+                    incomplete.insert(target.clone());
+                }
+                of_target.extend(dependencies);
             }
         }
         of_target.remove(&target);
-        if include_buildtime_dependencies {
+        if let Some(buildtime_input) = buildtime_input {
             for derivation in buildtime_input.0.values() {
                 let dependent = bom_ref(&derivation.path);
                 if !present.contains(&dependent) {
@@ -300,8 +348,13 @@ impl CycloneDXDependencies {
                 let entry = graph.entry(dependent.clone()).or_default();
                 for reference in &derivation.build_references {
                     let dependency = bom_ref(reference);
-                    if dependency != dependent && present.contains(&dependency) {
+                    if dependency == dependent {
+                        continue;
+                    }
+                    if present.contains(&dependency) {
                         entry.insert(dependency);
+                    } else if excluded.contains(reference) {
+                        incomplete.insert(dependent.clone());
                     }
                 }
             }
@@ -325,54 +378,68 @@ impl CycloneDXDependencies {
             graph.entry(reference.clone()).or_default();
         }
 
-        Self(Dependencies(
-            graph
-                .into_iter()
-                .map(|(dependency_ref, dependencies)| Dependency {
-                    dependency_ref,
-                    dependencies: dependencies.into_iter().collect(),
-                })
-                .collect(),
-        ))
+        Self(
+            Dependencies(
+                graph
+                    .into_iter()
+                    .map(|(dependency_ref, dependencies)| Dependency {
+                        dependency_ref,
+                        dependencies: dependencies.into_iter().collect(),
+                    })
+                    .collect(),
+            ),
+            incomplete,
+        )
     }
 }
 
-/// The components a store path depends on at runtime.
-///
-/// These are the store paths it refers to, as far as they are in the final BOM. A store path
-/// that is not is replaced by what it refers to in turn.
-fn runtime_dependencies(
-    store_path: &str,
-    runtime_input: &RuntimeInput,
-    present: &BTreeSet<String>,
-) -> BTreeSet<String> {
-    let references = |store_path: &str| {
-        runtime_input
-            .references
-            .get(store_path)
-            .into_iter()
-            .flatten()
-    };
+/// The runtime references between store paths, and the store paths that were excluded.
+struct RuntimeGraph<'a> {
+    runtime_input: &'a RuntimeInput,
+    excluded: &'a BTreeSet<String>,
+}
 
-    let dependent = bom_ref(store_path);
-    let mut dependencies = BTreeSet::new();
-    let mut visited = BTreeSet::new();
-    let mut pending = references(store_path).collect::<Vec<_>>();
-    while let Some(reference) = pending.pop() {
-        if !visited.insert(reference) {
-            continue;
+impl RuntimeGraph<'_> {
+    /// The components a store path depends on at runtime, and whether one that it would depend
+    /// on was excluded.
+    ///
+    /// These are the store paths it refers to, as far as they are in the final BOM. A store path
+    /// that is not is replaced by what it refers to in turn.
+    fn dependencies(
+        &self,
+        store_path: &str,
+        present: &BTreeSet<String>,
+    ) -> (BTreeSet<String>, bool) {
+        let references = |store_path: &str| {
+            self.runtime_input
+                .references
+                .get(store_path)
+                .into_iter()
+                .flatten()
+        };
+
+        let dependent = bom_ref(store_path);
+        let mut dependencies = BTreeSet::new();
+        let mut lacks_excluded = false;
+        let mut visited = BTreeSet::new();
+        let mut pending = references(store_path).collect::<Vec<_>>();
+        while let Some(reference) = pending.pop() {
+            if !visited.insert(reference) {
+                continue;
+            }
+            let dependency = bom_ref(reference);
+            if dependency == dependent {
+                continue;
+            }
+            if present.contains(&dependency) {
+                dependencies.insert(dependency);
+            } else {
+                lacks_excluded |= self.excluded.contains(reference);
+                pending.extend(references(reference));
+            }
         }
-        let dependency = bom_ref(reference);
-        if dependency == dependent {
-            continue;
-        }
-        if present.contains(&dependency) {
-            dependencies.insert(dependency);
-        } else {
-            pending.extend(references(reference));
-        }
+        (dependencies, lacks_excluded)
     }
-    dependencies
 }
 
 struct CycloneDXComponent(Component);
@@ -782,69 +849,139 @@ mod tests {
         Ok(())
     }
 
-    /// The dependency graph of a closure in which only some store paths are components.
+    /// A closure in which only some store paths are components.
     ///
     /// `references` is the runtime reference graph. `/nix/store/target` is the target, the
     /// store paths in `components` are the components.
+    #[derive(Default)]
+    struct Closure<'a> {
+        references: &'a [(&'a str, &'a [&'a str])],
+        components: &'a [&'a str],
+        extra_paths: &'a [&'a str],
+        excluded: &'a [&'a str],
+        buildtime: &'a [(&'a str, &'a [&'a str])],
+    }
+
+    impl Closure<'_> {
+        fn path(name: &str) -> String {
+            format!("/nix/store/{name}")
+        }
+
+        fn components(&self) -> CycloneDXComponents {
+            CycloneDXComponents::from_derivations(self.components.iter().map(|name| Derivation {
+                path: Self::path(name),
+                pname: Some((*name).to_string()),
+                version: Some("1".into()),
+                ..Derivation::default()
+            }))
+        }
+
+        fn target() -> Derivation {
+            Derivation {
+                path: Self::path("target"),
+                ..Derivation::default()
+            }
+        }
+
+        fn dependencies(&self) -> CycloneDXDependencies {
+            let paths = |names: &[&str]| names.iter().map(|name| Self::path(name)).collect();
+            let runtime_input = RuntimeInput {
+                paths: self
+                    .references
+                    .iter()
+                    .map(|(name, _)| Self::path(name))
+                    .collect(),
+                references: self
+                    .references
+                    .iter()
+                    .map(|(name, references)| (Self::path(name), paths(references)))
+                    .collect(),
+            };
+            let buildtime_input = BuildtimeInput(
+                self.buildtime
+                    .iter()
+                    .map(|(name, references)| {
+                        (
+                            Self::path(name),
+                            Derivation {
+                                path: Self::path(name),
+                                build_references: paths(references),
+                                ..Derivation::default()
+                            },
+                        )
+                    })
+                    .collect(),
+            );
+            let extra_paths: Vec<String> = paths(self.extra_paths);
+
+            CycloneDXDependencies::assemble(
+                &self.components(),
+                &Self::target(),
+                &extra_paths,
+                &self.excluded.iter().map(|name| Self::path(name)).collect(),
+                &runtime_input,
+                (!self.buildtime.is_empty()).then_some(&buildtime_input),
+                VendoredDependencies::new(),
+            )
+        }
+
+        /// What each ref depends on.
+        fn graph(&self) -> BTreeMap<String, Vec<String>> {
+            self.dependencies()
+                .0
+                .0
+                .into_iter()
+                .map(|dependency| (dependency.dependency_ref, dependency.dependencies))
+                .collect()
+        }
+
+        /// The refs whose dependencies are incomplete.
+        fn incomplete(&self) -> Vec<String> {
+            self.dependencies().1.into_iter().collect()
+        }
+
+        /// The refs of the compositions of the BOM by their aggregate.
+        fn compositions(&self) -> Result<Vec<(String, Vec<String>)>> {
+            let bom =
+                CycloneDXBom::build(Self::target(), self.components(), self.dependencies(), "");
+            let value: Value = serde_json::from_slice(&bom.serialize()?)?;
+            Ok(serde_json::from_value::<Vec<BTreeMap<String, Value>>>(
+                value["compositions"].clone(),
+            )?
+            .into_iter()
+            .map(|composition| {
+                assert_eq!(
+                    composition.keys().collect::<Vec<_>>(),
+                    ["aggregate", "dependencies"]
+                );
+                (
+                    composition["aggregate"].as_str().unwrap_or_default().into(),
+                    composition["dependencies"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|reference| reference.as_str().unwrap_or_default().into())
+                        .collect(),
+                )
+            })
+            .collect())
+        }
+    }
+
     fn graph(
         references: &[(&str, &[&str])],
         components: &[&str],
         extra_paths: &[&str],
         buildtime: &[(&str, &[&str])],
     ) -> BTreeMap<String, Vec<String>> {
-        let path = |name: &str| format!("/nix/store/{name}");
-        let runtime_input = RuntimeInput {
-            paths: references.iter().map(|(name, _)| path(name)).collect(),
-            references: references
-                .iter()
-                .map(|(name, refs)| (path(name), refs.iter().map(|r| path(r)).collect()))
-                .collect(),
-        };
-        let buildtime_input = BuildtimeInput(
-            buildtime
-                .iter()
-                .map(|(name, refs)| {
-                    (
-                        path(name),
-                        Derivation {
-                            path: path(name),
-                            build_references: refs.iter().map(|r| path(r)).collect(),
-                            ..Derivation::default()
-                        },
-                    )
-                })
-                .collect(),
-        );
-        let components =
-            CycloneDXComponents::from_derivations(components.iter().map(|name| Derivation {
-                path: path(name),
-                pname: Some((*name).to_string()),
-                version: Some("1".into()),
-                ..Derivation::default()
-            }));
-        let target = Derivation {
-            path: path("target"),
-            ..Derivation::default()
-        };
-        let extra_paths = extra_paths
-            .iter()
-            .map(|name| path(name))
-            .collect::<Vec<_>>();
-
-        CycloneDXDependencies::assemble(
-            &components,
-            &target,
-            &extra_paths,
-            &runtime_input,
-            &buildtime_input,
-            !buildtime.is_empty(),
-            VendoredDependencies::new(),
-        )
-        .0
-        .0
-        .into_iter()
-        .map(|dependency| (dependency.dependency_ref, dependency.dependencies))
-        .collect()
+        Closure {
+            references,
+            components,
+            extra_paths,
+            buildtime,
+            ..Closure::default()
+        }
+        .graph()
     }
 
     #[test]
@@ -954,6 +1091,109 @@ mod tests {
     }
 
     #[test]
+    fn dependencies_are_incomplete_where_one_is_excluded() {
+        let closure = Closure {
+            references: &[
+                ("target", &["unit", "a"]),
+                // The target refers to the excluded service through a unit.
+                ("unit", &["service"]),
+                ("service", &["library"]),
+                // a depends on b, and b refers to an excluded tool directly.
+                ("a", &["b"]),
+                ("b", &["tool"]),
+                ("tool", &[]),
+                ("library", &[]),
+            ],
+            components: &["a", "b", "library"],
+            excluded: &["service", "tool"],
+            ..Closure::default()
+        };
+
+        // a is not: what it depends on directly is there.
+        assert_eq!(closure.incomplete(), ["b", "target"]);
+
+        // What an excluded store path refers to is still followed.
+        let graph = closure.graph();
+        assert_eq!(graph["target"], ["a", "library"]);
+        assert_eq!(
+            graph,
+            Closure {
+                excluded: &[],
+                ..closure
+            }
+            .graph()
+        );
+    }
+
+    #[test]
+    fn dependencies_are_incomplete_where_an_extra_path_or_a_build_input_is_excluded() {
+        let closure = Closure {
+            references: &[
+                ("target", &[]),
+                ("a", &[]),
+                ("image", &["extra"]),
+                ("extra", &[]),
+            ],
+            components: &["a", "compiler"],
+            extra_paths: &["image"],
+            excluded: &["extra"],
+            ..Closure::default()
+        };
+        assert_eq!(closure.incomplete(), ["target"]);
+
+        let closure = Closure {
+            references: &[("target", &["a"]), ("a", &[]), ("b", &[])],
+            components: &["a", "b"],
+            excluded: &["compiler"],
+            // Only a direct build input counts, as only these are dependencies.
+            buildtime: &[
+                ("a", &["compiler"]),
+                ("b", &["environment"]),
+                ("environment", &["compiler"]),
+            ],
+            ..Closure::default()
+        };
+        assert_eq!(closure.incomplete(), ["a"]);
+    }
+
+    #[test]
+    fn completeness_of_dependencies() -> Result<()> {
+        let closure = Closure {
+            references: &[
+                ("target", &["a"]),
+                ("a", &["b", "service"]),
+                ("b", &[]),
+                ("service", &[]),
+            ],
+            components: &["a", "b"],
+            ..Closure::default()
+        };
+
+        // Every component and the target are named once. Nothing is known to be complete, also
+        // not the dependencies of b, which has none.
+        assert_eq!(
+            closure.compositions()?,
+            [(
+                "unknown".into(),
+                vec!["a".into(), "b".into(), "target".into()]
+            )]
+        );
+
+        let closure = Closure {
+            excluded: &["service"],
+            ..closure
+        };
+        assert_eq!(
+            closure.compositions()?,
+            [
+                ("unknown".into(), vec!["b".into(), "target".into()]),
+                ("incomplete".into(), vec!["a".into()]),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn subject() -> Result<()> {
         let system = Derivation {
             path: "/nix/store/nm7p8wxflggcwxfzayhysq4z6a1wg373-nixos-system-host-26.11".into(),
@@ -965,7 +1205,7 @@ mod tests {
             let bom = CycloneDXBom::build(
                 system.clone().described_as(name, version),
                 CycloneDXComponents::from_derivations([]),
-                CycloneDXDependencies(Dependencies(Vec::new())),
+                CycloneDXDependencies(Dependencies(Vec::new()), BTreeSet::new()),
                 "seed",
             );
             let json: Value = serde_json::from_slice(&bom.serialize()?)?;
