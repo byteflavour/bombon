@@ -17,6 +17,10 @@ pub struct Cli {
     #[arg(short, long)]
     exclude: Vec<String>,
 
+    /// Path to JSON containing the build recipes of the target
+    #[arg(long)]
+    recipes: PathBuf,
+
     /// Path to target derivation
     target: String,
 
@@ -35,6 +39,7 @@ impl Cli {
         transform(
             self.include_buildtime_dependencies,
             &self.exclude,
+            &self.recipes,
             &self.target,
             &self.buildtime_input,
             &self.runtime_input,

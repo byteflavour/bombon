@@ -145,6 +145,20 @@ let
       drv = llvm;
       options = { };
     }
+
+    # Dependencies that are only referred to in a string
+    {
+      name = "string-context";
+      drv = writeText "string-context-1.0" "${jq}/bin/jq";
+      options = { };
+      # jq depends on the lib output of oniguruma
+      assertion = ''
+        (.components[] | select(.name == "oniguruma" and .version != "") | ."bom-ref") as $ref
+        | ($ref | endswith("-lib"))
+          and any(.dependencies[]; .ref == $ref)
+          and any(.dependencies[]; .dependsOn | index($ref))
+      '';
+    }
   ];
 
   cycloneDxVersion = "1.7";
@@ -159,18 +173,34 @@ let
     sha256 = "sha256-30u5dqNj3xgVO2MONdHJIoqwdgFSbyOwBQQc0AnoDWM=";
   };
 
+  # Additionally to validating the Bom, an assertion on its content can be given
+  # as a jq filter that has to evaluate to true.
   buildBomAndValidate =
-    drv: options:
-    pkgs.runCommand "${drv.name}-bom-validation" { nativeBuildInputs = [ pkgs.check-jsonschema ]; } ''
-      sbom="${buildBom drv options}"
-      check-jsonschema \
-        --schemafile "${cycloneDxSpec}/schema/bom-${cycloneDxVersion}.schema.json" \
-        --base-uri "${cycloneDxSpec}/schema/bom-${cycloneDxVersion}.schema.json" \
-        "$sbom"
-      ln -s $sbom $out
-    '';
+    drv: options: assertion:
+    pkgs.runCommand "${drv.name}-bom-validation"
+      {
+        nativeBuildInputs = [
+          pkgs.check-jsonschema
+          pkgs.jq
+        ];
+        inherit assertion;
+      }
+      ''
+        sbom="${buildBom drv options}"
+        check-jsonschema \
+          --schemafile "${cycloneDxSpec}/schema/bom-${cycloneDxVersion}.schema.json" \
+          --base-uri "${cycloneDxSpec}/schema/bom-${cycloneDxVersion}.schema.json" \
+          "$sbom"
+        if [ -n "$assertion" ]; then
+          jq --exit-status "$assertion" "$sbom"
+        fi
+        ln -s $sbom $out
+      '';
 
   genAttrsFromDrvs =
-    drvs: f: builtins.listToAttrs (map (d: pkgs.lib.nameValuePair d.name (f d.drv d.options)) drvs);
+    drvs: f:
+    builtins.listToAttrs (
+      map (d: pkgs.lib.nameValuePair d.name (f d.drv d.options (d.assertion or ""))) drvs
+    );
 in
 genAttrsFromDrvs testDerivations buildBomAndValidate

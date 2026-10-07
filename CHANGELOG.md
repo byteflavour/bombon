@@ -19,6 +19,24 @@
 - Added support for compound licenses from Nixpkgs. Compound licenses are now
   included as SPDX expressions in the SBOM.
 - Added support for CycloneDX v1.7.
+- Files that are downloaded without stating a package name and version (e.g.
+  with a plain `fetchurl`) and end up in the runtime closure are now included
+  as components of type `file`. They carry the URL they are downloaded from
+  and, for single files, their hash. They have neither a version nor a PURL.
+
+### Changed
+
+- Dependencies that are only referred to in a string (e.g. `"${pkgs.jq}/bin/jq"`)
+  are now described by what their build recipe (`.drv` file) states instead of
+  by what can be guessed from their store path. Their name, version, patches
+  and source URL are taken from the recipe. Dependencies that were dropped
+  before because no version could be guessed (e.g. outputs like `-lib` or
+  `-dev`) are now included, and versions that contain dashes (e.g.
+  `1.0.22-unstable-2026-08-13`) are now correct. Expect SBOMs of targets with
+  such dependencies, most notably NixOS systems, to contain more components.
+- Splitting a version off a name is now only done if the build recipe states
+  nothing but a name. Such components are marked with identity evidence
+  (technique `filename`).
 
 ## 0.4.0
 
