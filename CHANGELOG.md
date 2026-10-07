@@ -37,6 +37,10 @@
   found in `packageSets` but a package of the same name is built from the same
   source, the license, description, homepage and identifiers of that package
   are used. Enabled by default.
+- Added the creator of a component as required by BSI TR-03183-2: the
+  homepage of its package is included as the `manufacturer` of the component.
+  This is the upstream project, also for packages that are patched. Components
+  whose package is not known or has no homepage have no `manufacturer`.
 - Added the property `bombon:origin` to every component of a dependency. It
   tells whether the component is described by a package, a build recipe, a
   build recipe with the metadata of a same-source package, a download or a

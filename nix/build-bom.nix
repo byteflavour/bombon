@@ -3,6 +3,7 @@
   runCommand,
   transformer,
   cyclonedx-cli,
+  jq,
   buildtimeDependencies,
   runtimeDependencies,
   recipeClosure,
@@ -40,6 +41,7 @@ runCommand "${drv.name}.cdx.json"
     nativeBuildInputs = [
       transformer
       cyclonedx-cli
+      jq
     ];
   }
   ''
@@ -56,5 +58,7 @@ runCommand "${drv.name}.cdx.json"
       --input-format=json \
       --input-file=tmp.cdx.json \
       --output-version=v1_7 \
-      --output-file=$out
+      --output-file=converted.cdx.json
+
+    jq --from-file ${./finish-bom.jq} converted.cdx.json > $out
   ''

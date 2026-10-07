@@ -342,10 +342,10 @@ impl CycloneDXComponent {
             Some(bom_ref(&derivation.path)),
         );
         component.scope = Some(Scope::Required);
-        component.properties = Some(Properties(vec![Property::new(
+        let mut properties = vec![Property::new(
             "bombon:origin",
             origin(derivation.identification, derivation.is_file),
-        )]));
+        )];
 
         let mut external_references = Vec::new();
 
@@ -383,8 +383,13 @@ impl CycloneDXComponent {
             }
             if let Some(homepage) = meta.homepage {
                 external_references.push(convert_homepage(&homepage));
+                // The homepage of a package also tells who created it. A component only has a
+                // field for that from CycloneDX v1.6 on, so it is passed along in a property
+                // that is turned into the manufacturer after the SBOM is converted.
+                properties.push(Property::new("bombon:manufacturer-url", &homepage));
             }
         }
+        component.properties = Some(Properties(properties));
 
         if !external_references.is_empty() {
             component.external_references = Some(ExternalReferences(external_references));
@@ -719,6 +724,56 @@ mod tests {
             expected("name")
         );
         assert_eq!(origin(file(None))?, expected("file"));
+        Ok(())
+    }
+
+    #[test]
+    fn creator() -> Result<()> {
+        let meta = |homepage: Option<&str>| -> Result<Meta> {
+            Ok(serde_json::from_value(serde_json::json!({
+                "description": "A library",
+                "homepage": homepage,
+            }))?)
+        };
+        let url = |component: &Value| -> Vec<Value> {
+            component["properties"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|property| property["name"] == "bombon:manufacturer-url")
+                .map(|property| property["value"].clone())
+                .collect()
+        };
+
+        // A package and a recipe with the metadata of a same-source package name their homepage.
+        for identification in [
+            Identification::Package,
+            Identification::RecipeWithSameSource,
+        ] {
+            let component = component(Derivation {
+                meta: Some(meta(Some("https://libssh2.org"))?),
+                identification,
+                ..package()
+            })?;
+            assert_eq!(url(&component), ["https://libssh2.org"]);
+            // The homepage is still referred to as the website.
+            assert_eq!(component["externalReferences"][0]["type"], "website");
+            assert_eq!(
+                component["externalReferences"][0]["url"],
+                "https://libssh2.org"
+            );
+            assert_eq!(component["properties"][0]["name"], "bombon:origin");
+        }
+
+        // Nothing is made up for packages without a homepage and for recipes.
+        let without_homepage = component(Derivation {
+            meta: Some(meta(None)?),
+            identification: Identification::Package,
+            ..package()
+        })?;
+        assert!(url(&without_homepage).is_empty());
+        assert!(url(&component(package())?).is_empty());
+        assert!(url(&component(file(None))?).is_empty());
         Ok(())
     }
 

@@ -193,6 +193,22 @@ seconds and 1.3 GiB of memory.
 The build recipes are read while evaluating. This does not work in a read-only
 evaluation (e.g. `nix-instantiate --eval` without `--read-write-mode`).
 
+## Creator of a Component
+
+BSI TR-03183-2 requires every component to name its creator: an email address
+or, if there is none, a URL like the web page of the project. Nixpkgs does not
+know the email addresses of the authors of a package but it knows its homepage.
+A component thus names the homepage of its package as its `manufacturer`, the
+field the guideline maps the creator to.
+
+This is the project the package comes from, also if the package is patched. The
+patches are part of the component. The maintainers of the package in Nixpkgs are
+not its creator and are not included.
+
+A component whose package is not known (see [Dependencies without
+Metadata](#dependencies-without-metadata)) or has no homepage has no
+`manufacturer`.
+
 ## Options
 
 `buildBom` accepts options as an attribute set. All attributes are optional:
