@@ -4,6 +4,11 @@
 
 ### Added
 
+- The SBOM now states how complete the dependencies of every component are, as
+  `compositions`. BSI TR-03183-2 requires this. They are stated as `unknown`, as
+  what a component contains without referring to it is not known, and as
+  `incomplete` for a component that depends on something that was removed with
+  `excludes`. They are never stated as `complete`.
 - Added `passthruVendoredSbom.npm` to generate SBOMs for vendored npm
   dependencies of packages that use `npmConfigHook` (e.g. anything built with
   `buildNpmPackage`). The SBOM is generated with `npm sbom`.
