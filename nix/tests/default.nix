@@ -160,16 +160,23 @@ let
       '';
     }
 
-    # Metadata for a dependency that is only referred to in a string
+    # Metadata for a dependency that is only referred to in a string. A package that is not a
+    # dependency (hello) adds nothing, not even as a buildtime dependency.
     {
       name = "metadata-from";
       drv = writeText "metadata-from-1.0" "${jq}/bin/jq";
-      options = {
-        metadataFrom = [ jq ];
+      options = buildtimeOptions // {
+        metadataFrom = [
+          jq
+          hello
+        ];
       };
       assertion = ''
-        .components[] | select(.name == "jq")
-        | (.licenses | length > 0) and (.properties | any(.name == "bombon:origin" and .value == "package"))
+        ([ .components[] | select(.name == "jq") ]
+          | length > 0 and all(
+            (.licenses | length > 0) and (.properties | any(.name == "bombon:origin" and .value == "package"))
+          ))
+        and ([ .components[] | select(.name == "hello") ] | length == 0)
       '';
     }
 

@@ -42,15 +42,8 @@ pub fn transform(
     let runtime_derivations =
         runtime_derivations(&runtime_input, &buildtime_input, &recipes, &same_source);
 
-    let buildtime_derivations = buildtime_input
-        .0
-        .clone()
-        .into_values()
-        .filter(|derivation| !runtime_input.paths.contains(&derivation.path))
-        .unique_by(|d| d.name.clone().unwrap_or(d.path.clone()));
-
     let all_derivations: Box<dyn Iterator<Item = Derivation>> = if include_buildtime_dependencies {
-        Box::new(runtime_derivations.chain(buildtime_derivations))
+        Box::new(runtime_derivations.chain(buildtime_derivations(&buildtime_input, &runtime_input)))
     } else {
         Box::new(runtime_derivations)
     };
@@ -119,6 +112,23 @@ fn runtime_derivations<'a>(
     })
 }
 
+/// The derivations of the build closure that are not part of the runtime closure.
+///
+/// Packages that only describe a dependency are not part of the build closure and thus left out.
+fn buildtime_derivations<'a>(
+    buildtime_input: &'a BuildtimeInput,
+    runtime_input: &'a RuntimeInput,
+) -> impl Iterator<Item = Derivation> + 'a {
+    buildtime_input
+        .0
+        .values()
+        .filter(|derivation| {
+            !derivation.metadata_only && !runtime_input.paths.contains(&derivation.path)
+        })
+        .cloned()
+        .unique_by(|d| d.name.clone().unwrap_or(d.path.clone()))
+}
+
 /// Whether a derivation is to be included in the SBOM as a component.
 fn is_component(derivation: &Derivation) -> bool {
     // Filter out all doc and man outputs.
@@ -181,6 +191,35 @@ mod tests {
         );
         assert!(!derivations.contains_key(without_recipe));
         Ok(())
+    }
+
+    #[test]
+    fn buildtime_derivations_of_the_closure() {
+        let derivation = |path: &str, metadata_only: bool| Derivation {
+            path: path.to_string(),
+            name: Some(path.to_string()),
+            metadata_only,
+            ..Derivation::default()
+        };
+        let runtime_input = RuntimeInput {
+            paths: BTreeSet::from(["/nix/store/a-runtime".to_string()]),
+            references: BTreeMap::new(),
+        };
+        let buildtime_input = BuildtimeInput(
+            [
+                derivation("/nix/store/a-runtime", false),
+                derivation("/nix/store/b-buildtime", false),
+                derivation("/nix/store/c-described", true),
+            ]
+            .into_iter()
+            .map(|d| (d.path.clone(), d))
+            .collect(),
+        );
+
+        let paths = buildtime_derivations(&buildtime_input, &runtime_input)
+            .map(|d| d.path)
+            .collect::<Vec<_>>();
+        assert_eq!(paths, ["/nix/store/b-buildtime"]);
     }
 
     #[test]

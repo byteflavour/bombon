@@ -26,7 +26,8 @@
 
 - Added the `metadataFrom` option to `buildBom`. The packages given this way
   are followed to find the metadata (license, description, CPE, etc.) of
-  dependencies but, unlike `extraPaths`, are not added to the SBOM.
+  dependencies but, unlike `extraPaths`, are not added to the SBOM, not even
+  as buildtime dependencies, and their vendored SBOMs are not read.
 - Added the `packageSets` option to `buildBom`. Dependencies whose package is
   not found by following attributes are looked up in these package sets by the
   name of their build recipe. A package is only used if it is built by exactly

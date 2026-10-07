@@ -139,8 +139,10 @@ where to find the packages of such dependencies:
 
 - `metadataFrom` is a list of packages to additionally start following
   attributes from. Unlike `extraPaths`, these packages are not added to the
-  BOM. They only provide the metadata for dependencies that are part of the BOM
-  anyway. A package that is not a dependency has no effect.
+  BOM. They only describe the dependencies that are part of the BOM anyway:
+  they provide their metadata and patches, but neither their vendored SBOMs
+  (see [Vendored Dependencies](#vendored-dependencies)) nor their buildtime
+  dependencies. A package that is not a dependency has no effect.
 - `packageSets` is a list of package sets to look up the build recipes in. A
   package is looked up by the name of the recipe and only used if it is built
   by exactly that recipe. The packages that are found this way are followed

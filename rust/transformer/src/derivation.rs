@@ -19,6 +19,9 @@ pub struct Derivation {
     pub patches: Vec<String>,
     #[serde(default)]
     pub build_references: Vec<String>,
+    /// Whether the package only describes a store path, i.e. is not part of the build closure.
+    #[serde(default)]
+    pub metadata_only: bool,
     /// Where the name and the version come from.
     #[serde(skip)]
     pub identification: Identification,

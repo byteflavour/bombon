@@ -30,14 +30,17 @@ let
     ) drv.drvAttrs;
 
   wrap = drv: {
-    key = drv.outPath;
+    # The context is discarded so that the key can be used as an attribute name.
+    key = builtins.unsafeDiscardStringContext drv.outPath;
     inherit drv;
   };
 
   # Walk through the whole DAG of dependencies, using the `outPath` as an
   # index for the elements.
   #
-  # Returns a list of all of `drv`'s buildtime dependencies.
+  # Returns a list of all of `drv`'s buildtime dependencies that are not in
+  # `known`, an attrset of store paths. Dependencies that are known are not
+  # followed, since their dependencies are known as well.
   # Elements in the list have two fields:
   #
   #  - key: the store path of the input.
@@ -45,11 +48,13 @@ let
   #
   # All outputs are included because they have different outPaths
   buildtimeDerivations =
-    drvs:
-    builtins.genericClosure {
-      startSet = map wrap (lib.concatMap drvOutputs drvs);
-      operator = item: map wrap (lib.concatLists (drvDeps item.drv));
-    };
+    drvs: known:
+    lib.filter (item: !(known ? ${item.key})) (
+      builtins.genericClosure {
+        startSet = map wrap (lib.concatMap drvOutputs drvs);
+        operator = item: if known ? ${item.key} then [ ] else map wrap (lib.concatLists (drvDeps item.drv));
+      }
+    );
 
   # Like lib.getAttrs but omit attrs that do not exist.
   optionalGetAttrs =
@@ -115,8 +120,12 @@ let
   #
   # Also renames outPath so that builtins.toJSON actually emits JSON and not
   # only the nix store path.
+  #
+  # A derivation that is only known to describe a dependency (`metadataOnly`) is not part of the
+  # build closure. It contributes nothing but its description: no build-time dependencies and no
+  # vendored SBOM, which would have to be built.
   fields =
-    drv:
+    metadataOnly: drv:
     (optionalGetAttrs [
       "name"
       "pname"
@@ -129,6 +138,11 @@ let
       # discarded so that the derivations do not have to be built to generate the SBOM.
       path = builtins.unsafeDiscardStringContext drv.outPath;
       patches = patchFiles (drv.patches or [ ]);
+    }
+    // lib.optionalAttrs metadataOnly {
+      inherit metadataOnly;
+    }
+    // lib.optionalAttrs (!metadataOnly) {
       # The store paths of this derivation's direct build-time dependencies, so the transformer can emit build-time `dependsOn` edges.
       buildReferences = lib.unique (
         map (o: builtins.unsafeDiscardStringContext o.outPath) (lib.concatLists (drvDeps drv))
@@ -142,7 +156,7 @@ let
         hash = drv.src.outputHash;
       };
     }
-    // lib.optionalAttrs (drv ? bombonVendoredSbom) {
+    // lib.optionalAttrs (!metadataOnly && drv ? bombonVendoredSbom) {
       vendoredSbom = drv.bombonVendoredSbom.outPath;
     }
     // lib.optionalAttrs (drv ? meta) {
@@ -233,7 +247,16 @@ let
     lookup: map (c: c.drv) (lib.filter (c: c.recipe == lookup.recipe.key) lookup.candidates)
   ) lookups;
 
-  allBuildtimeDerivations = buildtimeDerivations ([ drv ] ++ extraPaths ++ metadataFrom ++ found);
+  # The build closure of the SBOM's subject.
+  closure = buildtimeDerivations ([ drv ] ++ extraPaths) { };
+
+  # The packages that only describe dependencies, with what they depend on in turn. What is part
+  # of the build closure is left out so that it is described once.
+  metadataClosure = buildtimeDerivations (metadataFrom ++ found) (
+    lib.genAttrs (map (item: item.key) closure) (_: true)
+  );
+
+  allBuildtimeDerivations = closure ++ metadataClosure;
 
   knownRecipes = lib.genAttrs (map (item: recipeOf item.drv) allBuildtimeDerivations) (_: true);
 
@@ -250,7 +273,9 @@ let
   );
 
   unformattedJson = writeText "${drv.name}-unformatted-buildtime-dependencies.json" (
-    builtins.toJSON (map (item: (fields item.drv)) allBuildtimeDerivations)
+    builtins.toJSON (
+      map (item: fields false item.drv) closure ++ map (item: fields true item.drv) metadataClosure
+    )
   );
 
 in
