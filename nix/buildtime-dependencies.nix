@@ -3,7 +3,6 @@
   writeText,
   runCommand,
   jq,
-  recipeClosure,
 }:
 
 let
@@ -206,8 +205,12 @@ in
 #  - sameSourceMetadata: the metadata of packages in packageSets that are not built by one of the
 #    build recipes of drv but from the same source as one of them, by the store path of that
 #    recipe.
+#
+# recipeClosure is the list of build recipes of drv and extraPaths, as returned by
+# `recipe-closure.nix`.
 drv: extraPaths:
 {
+  recipeClosure,
   metadataFrom ? [ ],
   packageSets ? [ ],
   inferFromSameSource ? true,
@@ -223,7 +226,7 @@ let
       map (recipe: {
         inherit recipe;
         candidates = candidates packageSets recipe.key;
-      }) (recipeClosure drv extraPaths);
+      }) recipeClosure;
 
   # The packages that are built by exactly one of the build recipes.
   found = lib.concatMap (

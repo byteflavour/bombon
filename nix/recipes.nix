@@ -8,17 +8,16 @@
 # the sources they refer to become inputs of a build.
 {
   lib,
-  recipeClosure,
 }:
 
-drv: extraPaths:
+drv: recipeClosure:
 
 builtins.toFile "${drv.name}-recipes.json" (
   builtins.toJSON (
     lib.listToAttrs (
-      map (item: lib.nameValuePair item.key (builtins.unsafeDiscardStringContext item.content)) (
-        recipeClosure drv extraPaths
-      )
+      map (
+        item: lib.nameValuePair item.key (builtins.unsafeDiscardStringContext item.content)
+      ) recipeClosure
     )
   )
 )

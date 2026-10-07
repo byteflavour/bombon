@@ -5,6 +5,7 @@
   cyclonedx-cli,
   buildtimeDependencies,
   runtimeDependencies,
+  recipeClosure,
   recipes,
 }:
 
@@ -19,8 +20,13 @@ drv:
 }:
 
 let
+  # The build recipes are read once: they describe the dependencies and are looked up in the
+  # package sets.
+  buildRecipes = recipeClosure drv extraPaths;
+
   buildtime = buildtimeDependencies drv extraPaths {
     inherit metadataFrom packageSets inferFromSameSource;
+    recipeClosure = buildRecipes;
   };
 
   args =
@@ -40,7 +46,7 @@ runCommand "${drv.name}.cdx.json"
     bombon-transformer ${drv} \
       ${toString args} \
       --serial-number-seed "$out" \
-      --recipes ${recipes drv extraPaths} \
+      --recipes ${recipes drv buildRecipes} \
       --same-source-metadata ${buildtime.sameSourceMetadata} \
       ${buildtime.packages} \
       ${runtimeDependencies drv extraPaths} \
