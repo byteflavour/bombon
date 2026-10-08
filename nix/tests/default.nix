@@ -181,10 +181,17 @@ let
       options = { };
     }
 
+    # The Go modules are vendored into a directory, so their licenses are detected from the
+    # license files in it and are evidence
     {
       name = "age";
       drv = goPassthru age;
       options = { };
+      assertion = ''
+        [ .components[] | select((.purl // "") | startswith("pkg:golang/")) ]
+        | length > 0
+        and all(.[]; (has("licenses") | not) and (.evidence.licenses | length > 0))
+      '';
     }
     {
       name = "age-buildtime";
