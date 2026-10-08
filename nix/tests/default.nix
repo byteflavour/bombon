@@ -191,6 +191,23 @@ let
       drv = goPassthru age;
       options = buildtimeOptions;
     }
+    # The Go modules are available as a module proxy while building, so the licenses that are
+    # detected in their sources are evidence
+    {
+      name = "pigeon";
+      drv = goPassthru pigeon;
+      options = { };
+      assertion = ''
+        [ .components[] | select((.purl // "") | startswith("pkg:golang/")) ]
+        | length > 0
+        and all(
+          .[];
+          (has("licenses") | not)
+          and (.evidence.licenses | length > 0)
+          and all(.evidence.licenses[]; .license.id | type == "string")
+        )
+      '';
+    }
 
     # Multiple src urls
     {

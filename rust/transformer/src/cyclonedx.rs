@@ -185,7 +185,9 @@ impl CycloneDXComponents {
                         .bom_ref
                         .clone()
                         .unwrap_or_else(|| component.name.to_string());
-                    m.entry(key).or_insert_with(|| component.clone());
+                    m.entry(key)
+                        .and_modify(|known| adopt_license_evidence(known, component))
+                        .or_insert_with(|| component.clone());
                 }
             }
             if let Some(deps) = bom.0.dependencies {
@@ -251,6 +253,30 @@ impl CycloneDXComponents {
 impl From<CycloneDXComponents> for Components {
     fn from(value: CycloneDXComponents) -> Self {
         value.0
+    }
+}
+
+/// Take over the evidence of the licenses of a component that is the same as a known one.
+///
+/// A vendored SBOM only has this evidence if the sources of the vendored components were
+/// available to the tool that generated it. If two derivations vendor the same component, it
+/// would otherwise depend on the order they are read in whether the evidence is kept.
+fn adopt_license_evidence(known: &mut Component, same: &Component) {
+    let licenses = |component: &Component| {
+        component
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.licenses.clone())
+            .filter(|licenses| !licenses.0.is_empty())
+    };
+    if licenses(known).is_some() {
+        return;
+    }
+    if let Some(licenses) = licenses(same) {
+        match &mut known.evidence {
+            Some(evidence) => evidence.licenses = Some(licenses),
+            None => known.evidence.clone_from(&same.evidence),
+        }
     }
 }
 
@@ -1283,6 +1309,84 @@ mod tests {
         assert!(url(&without_homepage).is_empty());
         assert!(url(&component(package())?).is_empty());
         assert!(url(&component(file(None))?).is_empty());
+        Ok(())
+    }
+
+    /// Read the vendored SBOMs of two derivations that vendor the same Go module, one after the
+    /// other, and return the evidence and the licenses of that module.
+    fn evidence_of_vendored_module(evidence: [Option<&str>; 2]) -> Result<(Value, Value)> {
+        let mut components = CycloneDXComponents::from_derivations([]);
+        for (index, evidence) in evidence.into_iter().enumerate() {
+            let directory = std::env::temp_dir().join(format!(
+                "bombon-transformer-test-evidence-{}-{index}-{}",
+                std::process::id(),
+                evidence.unwrap_or("none")
+            ));
+            fs::create_dir_all(&directory)?;
+            let evidence = evidence.map_or(String::new(), |id| {
+                format!(
+                    r#", "evidence": {{ "licenses": [ {{ "license": {{ "id": "{id}" }} }} ] }}"#
+                )
+            });
+            fs::write(
+                directory.join("age.cdx.json"),
+                format!(
+                    r#"{{
+                        "bomFormat": "CycloneDX",
+                        "specVersion": "1.5",
+                        "version": 1,
+                        "components": [
+                            {{
+                                "type": "library",
+                                "name": "golang.org/x/term",
+                                "version": "v0.37.0",
+                                "bom-ref": "pkg:golang/golang.org/x/term@v0.37.0?type=module"
+                                {evidence}
+                            }}
+                        ]
+                    }}"#
+                ),
+            )?;
+            let extended = components.extend_from_directory(&directory, &package().path);
+            fs::remove_dir_all(&directory)?;
+            extended?;
+        }
+
+        let bom = CycloneDXBom(Bom {
+            components: Some(components.into()),
+            ..Bom::default()
+        });
+        let json: Value = serde_json::from_slice(&bom.serialize()?)?;
+        let components = json["components"]
+            .as_array()
+            .context("Missing components")?;
+        assert_eq!(components.len(), 1);
+        Ok((
+            components[0]["evidence"]["licenses"].clone(),
+            components[0]["licenses"].clone(),
+        ))
+    }
+
+    #[test]
+    fn vendored_components_keep_their_license_evidence() -> Result<()> {
+        let detected = |id: &str| serde_json::json!([{ "license": { "id": id } }]);
+
+        // A license that is detected in the source of a Go module is not its license but
+        // evidence of it.
+        let (evidence, licenses) = evidence_of_vendored_module([Some("BSD-3-Clause"), None])?;
+        assert_eq!(evidence, detected("BSD-3-Clause"));
+        assert_eq!(licenses, Value::Null);
+
+        // It does not depend on the order in which the derivations that vendor it are read.
+        let (evidence, _) = evidence_of_vendored_module([None, Some("BSD-3-Clause")])?;
+        assert_eq!(evidence, detected("BSD-3-Clause"));
+
+        // What is known first is kept.
+        let (evidence, _) = evidence_of_vendored_module([Some("BSD-3-Clause"), Some("MIT")])?;
+        assert_eq!(evidence, detected("BSD-3-Clause"));
+
+        let (evidence, _) = evidence_of_vendored_module([None, None])?;
+        assert_eq!(evidence, Value::Null);
         Ok(())
     }
 

@@ -244,9 +244,11 @@
 
                 cyclonedx-gomod bin \
                   -json \
+                  -licenses \
                   -noserial \
                   -notimestamp \
                   -output-version 1.5 \
+                  -version "v${finalAttrs.version}" \
                   -output "$(basename "$binary").cdx.json" \
                   "$binary"
               done
