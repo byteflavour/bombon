@@ -80,6 +80,9 @@
 
 ### Fixed
 
+- A pattern in `excludes` can now have characters that are special to the
+  shell, like `(`, `|`, `*` or a space, and can begin with a dash. The build of
+  the SBOM failed for such patterns as they were not quoted.
 - The dependency graph is connected to what the SBOM describes now. A
   dependency was only included if both sides are components, so everything a
   derivation refers to through a store path that is not a component (e.g. the
