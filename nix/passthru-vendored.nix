@@ -227,6 +227,8 @@
             pname = previousAttrs.pname + "-bombon-vendored-sbom";
             nativeBuildInputs = (previousAttrs.nativeBuildInputs or [ ]) ++ [
               pkgs.buildPackages.cyclonedx-gomod
+              pkgs.buildPackages.askalono
+              pkgs.buildPackages.jq
             ];
             outputs = [ "out" ];
             phases = [
@@ -238,6 +240,58 @@
             ];
 
             buildPhase = ''
+              # cyclonedx-gomod only detects the licenses of modules it can download, which it
+              # cannot if they are vendored into a directory. Their licenses are detected from
+              # the license files in that directory instead and added as evidence, like
+              # cyclonedx-gomod does it.
+              addLicenseEvidenceFromVendorDirectory() {
+                local bom="$1" reference name version file
+                [ -f vendor/modules.txt ] || return 0
+
+                jq --raw-output '
+                  .components[]?
+                  | select((.evidence.licenses // [ ]) | length == 0)
+                  | [ ."bom-ref", .name, .version ]
+                  | @tsv
+                ' "$bom" | while IFS=$'\t' read -r reference name version; do
+                  # Only the modules that are vendored in the version that is in the binary.
+                  awk -v module="# $name $version" '
+                    $0 == module || index($0, module " => ") == 1 { found = 1 }
+                    END { exit !found }
+                  ' vendor/modules.txt || continue
+                  [ -d "vendor/$name" ] || continue
+
+                  find "vendor/$name" -maxdepth 1 -type f \( \
+                    -iname 'LICENSE*' -o -iname 'LICENCE*' -o -iname 'COPYING*' -o -iname 'UNLICENSE*' \
+                  \) | sort | while read -r file; do
+                    { askalono --format json identify "$file" || true; } \
+                      | jq --raw-output --arg reference "$reference" \
+                        '.result.license.name // empty | [ $reference, . ] | @tsv'
+                  done
+                done > detected-licenses.tsv
+
+                if [ -s detected-licenses.tsv ]; then
+                  jq --rawfile detected detected-licenses.tsv '
+                    (
+                      $detected
+                      | split("\n")
+                      | map(select(length > 0) | split("\t"))
+                      | group_by(.[0])
+                      | map({
+                        key: .[0][0],
+                        value: (map(.[1]) | unique | map({ license: { id: . } }))
+                      })
+                      | from_entries
+                    ) as $evidence
+                    | .components |= map(
+                      if $evidence[."bom-ref"] then .evidence.licenses = $evidence[."bom-ref"] else . end
+                    )
+                  ' "$bom" > "$bom.tmp"
+                  mv "$bom.tmp" "$bom"
+                fi
+                rm detected-licenses.tsv
+              }
+
               for binary in ${finalAttrs.finalPackage}/bin/*; do
                 # Skip files that are not Go binaries, e.g. wrapper scripts.
                 go version -m "$binary" > /dev/null 2>&1 || continue
@@ -251,6 +305,8 @@
                   -version "v${finalAttrs.version}" \
                   -output "$(basename "$binary").cdx.json" \
                   "$binary"
+
+                addLicenseEvidenceFromVendorDirectory "$(basename "$binary").cdx.json"
               done
             '';
 

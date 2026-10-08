@@ -109,9 +109,13 @@ myGoPackageWithSbom = bombon.passthruVendoredSbom.go myGoPackage { inherit pkgs;
 
 A Go module does not declare its license, it only comes with the text of it. The
 license is detected from that text and included as evidence of the component
-(`evidence.licenses`), not as its license, as the detection can be wrong. This
-only works for packages that are built with `proxyVendor`: the sources of the
-modules are not available otherwise.
+(`evidence.licenses`), not as its license, as the detection can be wrong.
+
+Which tool detects it depends on how the package is built. With `proxyVendor`,
+`cyclonedx-gomod` gets the sources of the modules and detects the licenses
+itself. With a `vendor` directory, which is the default, it cannot, and the
+license files of the modules in that directory are identified with `askalono`.
+The two do not always agree on the same text.
 
 An SBOM built from this new derivation will now include the vendored dependencies.
 

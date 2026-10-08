@@ -5,9 +5,11 @@
 ### Added
 
 - The components of the Go modules that `passthruVendoredSbom.go` adds now have
-  evidence of their licenses, if the package is built with `proxyVendor`. The
-  licenses are detected from their texts in the sources of the modules, so they
-  are included as evidence and not as the licenses of the components.
+  evidence of their licenses. The licenses are detected from their texts in the
+  sources of the modules, so they are included as evidence and not as the
+  licenses of the components. If the package is built with `proxyVendor`, they
+  are detected by `cyclonedx-gomod`, otherwise by `askalono` from the license
+  files in the `vendor` directory.
 - The SBOM now states how complete the dependencies of every component are, as
   `compositions`. BSI TR-03183-2 requires this. They are stated as `unknown`, as
   what a component contains without referring to it is not known, and as
