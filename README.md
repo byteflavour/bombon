@@ -107,6 +107,12 @@ The `passthruVendoredSbom.go` function covers packages built with
 myGoPackageWithSbom = bombon.passthruVendoredSbom.go myGoPackage { inherit pkgs; };
 ```
 
+A Go module does not declare its license, it only comes with the text of it. The
+license is detected from that text and included as evidence of the component
+(`evidence.licenses`), not as its license, as the detection can be wrong. This
+only works for packages that are built with `proxyVendor`: the sources of the
+modules are not available otherwise.
+
 An SBOM built from this new derivation will now include the vendored dependencies.
 
 ## Dependencies without Metadata
