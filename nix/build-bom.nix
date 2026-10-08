@@ -103,7 +103,8 @@ let
     lib.optionals includeBuildtimeDependencies [
       "--include-buildtime-dependencies"
     ]
-    ++ lib.optionals (excludes != [ ]) (lib.map (e: "--exclude ${e}") excludes)
+    # A pattern is quoted for the shell and given with `=` as it can begin with a dash.
+    ++ lib.map (e: "--exclude=${lib.escapeShellArg e}") excludes
     # Only the store paths are of interest. They are built for the runtime dependencies anyway.
     ++ lib.map (path: "--extra-path ${builtins.unsafeDiscardStringContext "${path}"}") extraPaths
     ++ subjectArgs;

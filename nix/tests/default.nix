@@ -272,12 +272,13 @@ let
       name = "excluded-dependency";
       drv = writeText "excluded-dependency-1.0" "${writeText "unit" "${jq}/bin/jq"}";
       options = {
-        excludes = [ "jq.+bin" ];
+        # The pattern has characters that are special to the shell and begins with a dash
+        excludes = [ "-(jq|no such package)-[0-9.]*-bin$" ];
       };
       assertion = ''
         .metadata.component."bom-ref" as $subject
         | (.compositions | map({ (.aggregate): .dependencies }) | add) as $completeness
-        | all(.components[]; ."bom-ref" | test("jq.+bin") | not)
+        | all(.components[]; ."bom-ref" | test("-jq-[0-9.]*-bin$") | not)
         and (.compositions | map(.aggregate)) == [ "unknown", "incomplete" ]
         and $completeness.incomplete == [ $subject ]
         and ($completeness.unknown | sort) == ([ .components[]."bom-ref" ] | sort)
