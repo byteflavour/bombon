@@ -472,11 +472,11 @@ struct CycloneDXComponent(Component);
 
 impl CycloneDXComponent {
     fn from_derivation(derivation: Derivation) -> Self {
-        let name = match derivation.pname {
-            Some(pname) => pname,
-            None => derivation.name.unwrap_or_default(),
+        let name = match &derivation.pname {
+            Some(pname) => pname.clone(),
+            None => derivation.name.clone().unwrap_or_default(),
         };
-        let version = derivation.version.unwrap_or_default();
+        let version = derivation.version.clone().unwrap_or_default();
         let mut component = Component::new(
             if derivation.is_file {
                 Classification::File
@@ -490,6 +490,7 @@ impl CycloneDXComponent {
             Some(bom_ref(&derivation.path)),
         );
         component.scope = Some(Scope::Required);
+        let ancestor = upstream_ancestor(&derivation, &name, &version);
         let mut properties = vec![Property::new(
             "bombon:origin",
             origin(derivation.identification, derivation.is_file),
@@ -543,21 +544,23 @@ impl CycloneDXComponent {
             component.external_references = Some(ExternalReferences(external_references));
         }
 
-        if !derivation.patches.is_empty() {
+        if !derivation.patches.is_empty() || ancestor.is_some() {
             component.pedigree = Some(Pedigree {
-                ancestors: None,
+                ancestors: ancestor.map(|ancestor| Components(vec![ancestor])),
                 descendants: None,
                 variants: None,
                 commits: None,
-                patches: Some(convert_patches(
-                    &derivation.patches,
-                    // The patches named by a build recipe are not necessarily available. They
-                    // are listed nonetheless.
-                    matches!(
-                        derivation.identification,
-                        Identification::Recipe | Identification::RecipeWithSameSource
-                    ),
-                )),
+                patches: (!derivation.patches.is_empty()).then(|| {
+                    convert_patches(
+                        &derivation.patches,
+                        // The patches named by a build recipe are not necessarily available. They
+                        // are listed nonetheless.
+                        matches!(
+                            derivation.identification,
+                            Identification::Recipe | Identification::RecipeWithSameSource
+                        ),
+                    )
+                }),
                 notes: None,
             });
         }
@@ -570,6 +573,51 @@ impl From<CycloneDXComponent> for Component {
     fn from(value: CycloneDXComponent) -> Self {
         value.0
     }
+}
+
+/// The upstream source a package is built from, as an ancestor of its component.
+///
+/// It is identified by the purl that nixpkgs states for the package, or else for its source. No
+/// purl is derived from where the source is downloaded from.
+fn upstream_ancestor(derivation: &Derivation, name: &str, version: &str) -> Option<Component> {
+    // A downloaded file is the source itself, and of a component that is only known by its name
+    // nothing is known about where it comes from.
+    if derivation.is_file || derivation.identification == Identification::Name {
+        return None;
+    }
+    let purl = derivation
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.identifiers.as_ref())
+        .and_then(|identifiers| identifiers.purl.clone())
+        .or_else(|| derivation.src.as_ref().and_then(|src| src.purl.clone()));
+    let urls = derivation
+        .src
+        .as_ref()
+        .map(|src| src.urls.as_slice())
+        .unwrap_or_default();
+    if purl.is_none() && urls.is_empty() {
+        return None;
+    }
+
+    let mut ancestor = Component::new(
+        Classification::Library,
+        name,
+        version,
+        Some(format!("{}#upstream", bom_ref(&derivation.path))),
+    );
+    ancestor.purl = purl.and_then(|purl| Purl::from_str(&purl).ok());
+    ancestor.hashes = derivation
+        .src
+        .as_ref()
+        .and_then(|src| src.hash.as_deref())
+        .and_then(convert_hash);
+    if !urls.is_empty() {
+        ancestor.external_references = Some(ExternalReferences(
+            urls.iter().map(|url| convert_distribution(url)).collect(),
+        ));
+    }
+    Some(ancestor)
 }
 
 fn string_to_url(s: &str) -> external_reference::Uri {
@@ -834,11 +882,153 @@ mod tests {
             src: Some(Src {
                 urls: vec!["https://tukaani.org/xz/xz-5.8.3.tar.gz".into()],
                 hash: hash.map(Into::into),
+                purl: None,
             }),
             is_file: true,
             identification: Identification::Recipe,
             ..Derivation::default()
         }
+    }
+
+    /// A package built from a source with the given purls, the package's own and its source's.
+    fn package_from_source(own: Option<&str>, of_source: Option<&str>) -> Derivation {
+        Derivation {
+            identification: Identification::Package,
+            src: Some(Src {
+                urls: vec![
+                    "https://example.org/libssh2-1.11.1.tar.gz".into(),
+                    "https://mirror.example.org/libssh2-1.11.1.tar.gz".into(),
+                ],
+                hash: Some("sha256-gu8ArAqb19mzrmcK2LbDPa1J8EAiRYa/r8vbRYqBkxE=".into()),
+                purl: of_source.map(Into::into),
+            }),
+            meta: Some(Meta {
+                identifiers: Some(derivation::Identifiers {
+                    cpe: Some("cpe:2.3:a:libssh2:libssh2:1.11.1:*:*:*:*:*:*:*".into()),
+                    purl: own.map(Into::into),
+                    ..derivation::Identifiers::default()
+                }),
+                license: None,
+                homepage: None,
+                description: None,
+            }),
+            patches: vec!["/nix/store/m9171q7kn5bbp08hqmhfra41mmn6p5nk-CVE-2026-7598.patch".into()],
+            ..package()
+        }
+    }
+
+    #[test]
+    fn upstream_ancestor_from_nixpkgs() -> Result<()> {
+        let ancestor = |derivation| -> Result<Value> {
+            let component = component(derivation)?;
+            let ancestors = component["pedigree"]["ancestors"]
+                .as_array()
+                .context("No ancestors")?;
+            assert_eq!(ancestors.len(), 1);
+            Ok(ancestors[0].clone())
+        };
+
+        // The purl of the source, which fetchers like fetchFromGitHub state.
+        let from_source = ancestor(package_from_source(
+            None,
+            Some("pkg:github/libssh2/libssh2@libssh2-1.11.1"),
+        ))?;
+        assert_eq!(
+            from_source["purl"],
+            "pkg:github/libssh2/libssh2@libssh2-1.11.1"
+        );
+        assert_eq!(
+            from_source["bom-ref"],
+            "b6dac7q3270fhwxr0glxi35hrhw2v97r-libssh2-1.11.1-dev#upstream"
+        );
+        assert_eq!(from_source["name"], "libssh2");
+        assert_eq!(from_source["version"], "1.11.1");
+        assert_eq!(from_source["hashes"][0]["alg"], "SHA-256");
+        let references = from_source["externalReferences"]
+            .as_array()
+            .context("No references")?;
+        assert_eq!(references.len(), 2);
+        assert!(references.iter().all(|r| r["type"] == "distribution"));
+
+        // The package's own purl is the more specific statement.
+        let own = ancestor(package_from_source(
+            Some("pkg:github/libssh2/libssh2@1.11.1"),
+            Some("pkg:github/libssh2/libssh2@libssh2-1.11.1"),
+        ))?;
+        assert_eq!(own["purl"], "pkg:github/libssh2/libssh2@1.11.1");
+
+        // A tarball from a mirror: no purl is made up from where it is downloaded from.
+        let without = ancestor(package_from_source(None, None))?;
+        assert!(without.get("purl").is_none());
+        assert_eq!(
+            without["externalReferences"].as_array().map(Vec::len),
+            Some(2)
+        );
+
+        // A component identified from its recipe has its source from the recipe.
+        let from_recipe = ancestor(Derivation {
+            identification: Identification::Recipe,
+            meta: None,
+            ..package_from_source(None, None)
+        })?;
+        assert!(from_recipe.get("purl").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn component_with_upstream_ancestor_is_unchanged_otherwise() -> Result<()> {
+        let with = component(Derivation {
+            // The patches named by a recipe are listed also when they are not available, as in
+            // the sandbox the tests are built in.
+            identification: Identification::Recipe,
+            ..package_from_source(None, Some("pkg:github/libssh2/libssh2@libssh2-1.11.1"))
+        })?;
+        assert_eq!(with["purl"], "pkg:nix/libssh2@1.11.1");
+        assert_eq!(
+            with["cpe"],
+            "cpe:2.3:a:libssh2:libssh2:1.11.1:*:*:*:*:*:*:*"
+        );
+        assert_eq!(
+            with["pedigree"]["patches"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert!(
+            with["externalReferences"]
+                .as_array()
+                .is_some_and(|references| references.iter().any(|r| r["type"] == "vcs"))
+        );
+
+        // The ancestor is no component of its own, so the graph does not name it.
+        let derivation = package_from_source(None, Some("pkg:github/libssh2/libssh2@1.1"));
+        let components = CycloneDXComponents::from_derivations([derivation]);
+        assert!(
+            components
+                .bom_refs()
+                .iter()
+                .all(|r| !r.ends_with("#upstream"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn no_upstream_ancestor() -> Result<()> {
+        // Nothing is known about the source.
+        let unknown = component(Derivation {
+            identification: Identification::Package,
+            ..package()
+        })?;
+        assert!(unknown.get("pedigree").is_none());
+
+        // A downloaded file is the source itself.
+        assert!(component(file(Some(SHA256)))?.get("pedigree").is_none());
+
+        // Of a component identified by its name nothing is known about its source.
+        let by_name = component(Derivation {
+            identification: Identification::Name,
+            ..package_from_source(None, Some("pkg:github/libssh2/libssh2@1.1"))
+        })?;
+        assert!(by_name["pedigree"].get("ancestors").is_none());
+        Ok(())
     }
 
     #[test]
@@ -1437,6 +1627,7 @@ mod tests {
             src: Some(Src {
                 urls: vec!["https://example.org/libssh2-1.11.1.tar.gz".into()],
                 hash: Some(SHA256.into()),
+                purl: None,
             }),
             ..package()
         })?;

@@ -149,12 +149,20 @@ let
       );
     }
     // lib.optionalAttrs (drv ? src && drv.src ? urls) {
-      src = {
-        inherit (drv.src) urls;
-      }
-      // lib.optionalAttrs (drv.src ? outputHash) {
-        hash = drv.src.outputHash;
-      };
+      src =
+        let
+          # Fetchers like fetchFromGitHub name what they fetch with a purl.
+          purl = builtins.tryEval (drv.src.meta.identifiers.purl or null);
+        in
+        {
+          inherit (drv.src) urls;
+        }
+        // lib.optionalAttrs (drv.src ? outputHash) {
+          hash = drv.src.outputHash;
+        }
+        // lib.optionalAttrs (purl.success && purl.value != null) {
+          purl = purl.value;
+        };
     }
     // lib.optionalAttrs (!metadataOnly && drv ? bombonVendoredSbom) {
       vendoredSbom = drv.bombonVendoredSbom.outPath;

@@ -252,6 +252,21 @@ A component whose package is not known (see [Dependencies without
 Metadata](#dependencies-without-metadata)) or has no homepage has no
 `manufacturer`.
 
+## Upstream of a Component
+
+A component of a Nix package has the PURL `pkg:nix/<name>@<version>`. What it
+is built from is told as an ancestor in its pedigree, next to its patches: the
+upstream source, with its hash and where it is downloaded from.
+
+The ancestor has a PURL if nixpkgs states one, the package's own
+`meta.identifiers.purl` or else the one of its `src`. Fetchers like
+`fetchFromGitHub` and `fetchPypi` set it. No PURL is made up from where a source
+is downloaded from.
+
+Tools that read ancestors, like Trustify, match their PURL and CPE against
+vulnerabilities like the ones of components. The CPE of a package stays on its
+component.
+
 ## The SBOM and its Subject
 
 BSI TR-03183-2 requires an SBOM to tell when its data was compiled and who
