@@ -80,6 +80,10 @@
 
 ### Fixed
 
+- SBOMs can be generated in pure evaluation, e.g. when bombon is a flake input.
+  The build recipes were read while evaluating, which pure evaluation does not
+  allow. They are now read while building. Looking up packages in
+  `packageSets` needs import from derivation.
 - A pattern in `excludes` can now have characters that are special to the
   shell, like `(`, `|`, `*` or a space, and can begin with a dash. The build of
   the SBOM failed for such patterns as they were not quoted.

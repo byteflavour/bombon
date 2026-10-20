@@ -10,8 +10,15 @@ mod transform;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::Cli;
+use cli::{Cli, RecipeIndexCli};
 
 fn main() -> Result<()> {
-    Cli::parse().call()
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|argument| argument == "recipe-index")
+    {
+        RecipeIndexCli::parse_from(std::env::args_os().skip(1)).call()
+    } else {
+        Cli::parse().call()
+    }
 }

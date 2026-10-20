@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
+use crate::recipe::RecipeClosure;
 use crate::transform::{Options, transform};
 
 #[derive(Parser)]
@@ -75,5 +76,25 @@ impl Cli {
             runtime_input: self.runtime_input,
             output: self.output,
         })
+    }
+}
+
+/// Write an index of the build recipes that the given recipes depend on, including themselves.
+///
+/// Called as `bombon-transformer recipe-index`.
+#[derive(Parser)]
+#[command(name = "bombon-transformer recipe-index")]
+pub struct RecipeIndexCli {
+    /// Directory to write `recipes.json` and `inputs.json` to
+    #[arg(long)]
+    output: PathBuf,
+
+    /// Store paths of the recipes to start from
+    roots: Vec<String>,
+}
+
+impl RecipeIndexCli {
+    pub fn call(self) -> Result<()> {
+        RecipeClosure::from_store(&self.roots)?.write(&self.output)
     }
 }
