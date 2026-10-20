@@ -83,6 +83,8 @@
 
 ### Fixed
 
+- A license whose SPDX id the CycloneDX schema does not know, like `TekHVC`,
+  is now given by its name. The SBOM did not validate.
 - SBOMs can be generated in pure evaluation, e.g. when bombon is a flake input.
   The build recipes were read while evaluating, which pure evaluation does not
   allow. They are now read while building. Looking up packages in
