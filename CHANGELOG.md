@@ -4,6 +4,9 @@
 
 ### Added
 
+- A component of a Nix package has the upstream source it is built from as
+  an ancestor in its pedigree, with its hash, its download addresses and the
+  PURL nixpkgs states for the package or its source.
 - The components of the Go modules that `passthruVendoredSbom.go` adds now have
   evidence of their licenses. The licenses are detected from their texts in the
   sources of the modules, so they are included as evidence and not as the

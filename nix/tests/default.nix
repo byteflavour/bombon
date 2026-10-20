@@ -39,6 +39,13 @@ let
         and (.compositions | length == 1 and .[0].aggregate == "unknown")
         and (.compositions[0].dependencies | sort)
           == ([ .metadata.component."bom-ref", .components[]."bom-ref" ] | unique)
+        # It is built from a tarball from a mirror. Where it comes from is told, no purl is made
+        # up for it.
+        and (
+          [ .components[] | select(.name == "hello") | .pedigree.ancestors[] ]
+          | length == 1
+          and all(.[]; (has("purl") | not) and any(.externalReferences[]; .type == "distribution"))
+        )
       '';
     }
     # What is given about the SBOM and its subject
@@ -188,9 +195,14 @@ let
       drv = goPassthru age;
       options = { };
       assertion = ''
-        [ .components[] | select((.purl // "") | startswith("pkg:golang/")) ]
-        | length > 0
-        and all(.[]; (has("licenses") | not) and (.evidence.licenses | length > 0))
+        ([ .components[] | select((.purl // "") | startswith("pkg:golang/")) ]
+          | length > 0
+          and all(.[]; (has("licenses") | not) and (.evidence.licenses | length > 0)))
+        # It is fetched from GitHub, which tells its purl
+        and any(
+          .components[] | select(.name == "age") | .pedigree.ancestors[];
+          .purl == "pkg:github/FiloSottile/age@v1.3.1"
+        )
       '';
     }
     {
@@ -301,6 +313,8 @@ let
         ([ .components[] | select(.name == "jq") ]
           | length > 0 and all(
             (.licenses | length > 0) and (.properties | any(.name == "bombon:origin" and .value == "package"))
+            # The package states its own purl
+            and (.pedigree.ancestors[0].purl | startswith("pkg:github/jqlang/jq@"))
           ))
         and ([ .components[] | select(.name == "hello") ] | length == 0)
       '';

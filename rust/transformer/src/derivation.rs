@@ -138,6 +138,7 @@ pub struct Meta {
 #[derive(Deserialize, Clone, Debug, Default)]
 pub struct Identifiers {
     pub cpe: Option<String>,
+    pub purl: Option<String>,
     #[serde(rename = "possibleCPEs")]
     pub possible_cpes: Option<Vec<Cpe>>,
 }
@@ -175,6 +176,8 @@ pub struct LicenseExpression(pub String);
 pub struct Src {
     pub urls: Vec<String>,
     pub hash: Option<String>,
+    /// What is fetched as a purl, if the fetcher states it.
+    pub purl: Option<String>,
 }
 
 impl Src {
@@ -188,6 +191,7 @@ impl Src {
                 .filter(|fixed| !fixed.recursive)
                 .and_then(|fixed| SriHash::from_hex(&fixed.algorithm, &fixed.digest).ok())
                 .map(|hash| hash.to_sri()),
+            purl: None,
         }
     }
 }
