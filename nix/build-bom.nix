@@ -1,6 +1,7 @@
 {
   lib,
   runCommand,
+  fetchurl,
   transformer,
   cyclonedx-cli,
   jq,
@@ -107,6 +108,13 @@ let
     # Only the store paths are of interest. They are built for the runtime dependencies anyway.
     ++ lib.map (path: "--extra-path ${builtins.unsafeDiscardStringContext "${path}"}") extraPaths
     ++ subjectArgs;
+
+  # The license ids that the CycloneDX 1.7 schema knows. It lists the ones of an SPDX license list
+  # that is older than the one of nixpkgs.
+  spdxSchema = fetchurl {
+    url = "https://raw.githubusercontent.com/CycloneDX/specification/1.7/schema/spdx.schema.json";
+    sha256 = "06ycqwwqbdz58s5fdzq4cyknyhqpky9mybwmsfq90v5wja12i9jl";
+  };
 in
 runCommand "${drv.name}.cdx.json"
   {
@@ -134,5 +142,6 @@ runCommand "${drv.name}.cdx.json"
 
     jq --from-file ${./finish-bom.jq} \
       --slurpfile options ${builtins.toFile "bom-options.json" (builtins.toJSON finishOptions)} \
+      --slurpfile spdx ${spdxSchema} \
       converted.cdx.json > $out
   ''

@@ -36,8 +36,21 @@ def timestamp:
       error("timestamp: \($timestamp) is not a date and time in UTC")
     end;
 
+# A license with an id that the schema does not know is given by its name instead, so that the
+# SBOM stays valid and the license is kept.
+def known_license_ids:
+  ($spdx[0].enum | map({ (.): true }) | add);
+
 # What the caller says about the SBOM and its subject.
 ($options[0] // {}) as $given
+| known_license_ids as $known
+| walk(
+    if type == "object" and (.license | type) == "object" and .license.id and ($known[.license.id] | not) then
+      .license |= ({ name: .id } + del(.id))
+    else
+      .
+    end
+  )
 | (if .metadata.component then .metadata.component |= finish else . end)
 | (if .components then .components |= map(finish) else . end)
 | if any(.. | objects; (.name? // "") == "bombon:manufacturer-url") then

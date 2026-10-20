@@ -228,6 +228,16 @@ let
       '';
     }
 
+    # A license whose SPDX id the CycloneDX schema does not know (TekHVC) is given by its name
+    {
+      name = "libx11";
+      drv = libx11;
+      options = { };
+      assertion = ''
+        any(.components[] | select(.name == "libx11") | .licenses[]; .license == { name: "TekHVC" })
+      '';
+    }
+
     # Multiple src urls
     {
       name = "kexec-tools";
