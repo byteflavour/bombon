@@ -7,8 +7,7 @@ pkgs.lib.makeScope pkgs.newScope (self: {
   __internal = {
     buildtimeDependencies = self.callPackage ./nix/buildtime-dependencies.nix { };
     runtimeDependencies = self.callPackage ./nix/runtime-dependencies.nix { };
-    recipeClosure = self.callPackage ./nix/recipe-closure.nix { };
-    recipes = self.callPackage ./nix/recipes.nix { };
+    recipeIndex = self.callPackage ./nix/recipe-index.nix { };
     transformerWithoutSbom = self.callPackage ./nix/packages/transformer.nix { };
   };
 
@@ -20,8 +19,7 @@ pkgs.lib.makeScope pkgs.newScope (self: {
     inherit (self.__internal)
       buildtimeDependencies
       runtimeDependencies
-      recipeClosure
-      recipes
+      recipeIndex
       ;
   };
 })

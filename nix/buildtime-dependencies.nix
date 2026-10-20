@@ -237,11 +237,12 @@ in
 #    build recipes of drv but from the same source as one of them, by the store path of that
 #    recipe.
 #
-# recipeClosure is the list of build recipes of drv and extraPaths, as returned by
-# `recipe-closure.nix`.
+# recipeIndex is the index of the build recipes of drv and extraPaths, as returned by
+# `recipe-index.nix`. It is only read if there are packageSets: reading it while evaluating means
+# building it first (import from derivation).
 drv: extraPaths:
 {
-  recipeClosure,
+  recipeIndex,
   metadataFrom ? [ ],
   packageSets ? [ ],
   inferFromSameSource ? true,
@@ -254,10 +255,10 @@ let
     if packageSets == [ ] then
       [ ]
     else
-      map (recipe: {
-        inherit recipe;
-        candidates = candidates packageSets recipe.key;
-      }) recipeClosure;
+      lib.mapAttrsToList (key: inputRecipes: {
+        recipe = { inherit key inputRecipes; };
+        candidates = candidates packageSets key;
+      }) (builtins.fromJSON (builtins.readFile "${recipeIndex}/inputs.json"));
 
   # The packages that are built by exactly one of the build recipes.
   found = lib.concatMap (

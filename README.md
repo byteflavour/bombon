@@ -200,8 +200,11 @@ Looking up packages happens while evaluating. For a NixOS system with about
 13,000 build recipes and 1,000 packages in `metadataFrom` it takes about 40
 seconds and 1.3 GiB of memory.
 
-The build recipes are read while evaluating. This does not work in a read-only
-evaluation (e.g. `nix-instantiate --eval` without `--read-write-mode`).
+The build recipes are read while building, in a step of their own, as pure
+evaluation does not allow reading them. To look up packages in `packageSets`,
+the result of that step is needed while evaluating, so it is built first (import
+from derivation). Without `packageSets` an SBOM can also be generated where
+import from derivation is disabled.
 
 ## Dependencies between Components
 

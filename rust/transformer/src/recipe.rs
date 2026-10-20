@@ -249,6 +249,65 @@ impl RecipeOutput {
 #[derive(Debug, Clone, Default)]
 pub struct RecipeIndex(BTreeMap<String, RecipeOutput>);
 
+/// The build recipes that some recipes depend on, directly or indirectly, including themselves.
+///
+/// The recipes are read while building rather than while evaluating, as pure evaluation does not
+/// allow reading them.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RecipeClosure {
+    /// The text of each recipe, by its store path.
+    texts: BTreeMap<String, String>,
+    /// The recipes each recipe depends on directly, by its store path.
+    inputs: BTreeMap<String, Vec<String>>,
+}
+
+impl RecipeClosure {
+    /// Read the closure of the recipes `roots`, reading each recipe with `read`.
+    pub fn read(roots: &[String], read: impl Fn(&str) -> Result<String>) -> Result<Self> {
+        let mut texts = BTreeMap::new();
+        let mut inputs = BTreeMap::new();
+        let mut pending = roots.to_vec();
+        while let Some(path) = pending.pop() {
+            if texts.contains_key(&path) {
+                continue;
+            }
+            let text = read(&path)?;
+            let mut input_recipes = Recipe::parse(&text)
+                .with_context(|| format!("Failed to parse recipe {path}"))?
+                .input_recipes;
+            input_recipes.sort();
+            input_recipes.dedup();
+            pending.extend(input_recipes.iter().cloned());
+            inputs.insert(path.clone(), input_recipes);
+            texts.insert(path, text);
+        }
+        Ok(Self { texts, inputs })
+    }
+
+    /// Read the closure of the recipes `roots` from the store.
+    pub fn from_store(roots: &[String]) -> Result<Self> {
+        Self::read(roots, |path| {
+            fs::read_to_string(path).with_context(|| format!("Failed to read recipe {path}"))
+        })
+    }
+
+    /// Write the closure into `directory`: the texts of the recipes to `recipes.json`, as read by
+    /// [`RecipeIndex::from_file`], and the recipes each recipe depends on to `inputs.json`.
+    pub fn write(&self, directory: &Path) -> Result<()> {
+        fs::create_dir_all(directory)
+            .with_context(|| format!("Failed to create {}", directory.display()))?;
+        for (name, content) in [
+            ("recipes.json", serde_json::to_string(&self.texts)?),
+            ("inputs.json", serde_json::to_string(&self.inputs)?),
+        ] {
+            let path = directory.join(name);
+            fs::write(&path, content)
+                .with_context(|| format!("Failed to write {}", path.display()))?;
+        }
+        Ok(())
+    }
+}
+
 impl RecipeIndex {
     /// Read a JSON file that maps the store paths of recipes to their text.
     pub fn from_file(path: &Path) -> Result<Self> {
@@ -472,5 +531,83 @@ pub mod tests {
             .err()
             .map(|e| format!("{e:#}"));
         assert!(error.is_some_and(|e| e.contains("/nix/store/a-broken.drv")));
+    }
+
+    /// A recipe with the given input recipes.
+    fn recipe(inputs: &[&str]) -> String {
+        let inputs = inputs
+            .iter()
+            .map(|input| format!(r#"("{input}",["out"])"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            r#"Derive([("out","/nix/store/out","","")],[{inputs}],[],"x86_64-linux","/bin/sh",[],[])"#
+        )
+    }
+
+    #[test]
+    fn recipe_closure() -> Result<()> {
+        let recipes = BTreeMap::from([
+            (
+                "/nix/store/a.drv",
+                recipe(&["/nix/store/c.drv", "/nix/store/b.drv"]),
+            ),
+            // c is reached from a and from b.
+            ("/nix/store/b.drv", recipe(&["/nix/store/c.drv"])),
+            ("/nix/store/c.drv", recipe(&[])),
+            ("/nix/store/unrelated.drv", recipe(&[])),
+        ]);
+        let read = |path: &str| {
+            recipes
+                .get(path)
+                .cloned()
+                .with_context(|| format!("No recipe {path}"))
+        };
+
+        let closure = RecipeClosure::read(&["/nix/store/a.drv".into()], read)?;
+
+        assert_eq!(
+            closure.texts.keys().collect::<Vec<_>>(),
+            ["/nix/store/a.drv", "/nix/store/b.drv", "/nix/store/c.drv"]
+        );
+        assert_eq!(
+            closure.inputs["/nix/store/a.drv"],
+            ["/nix/store/b.drv", "/nix/store/c.drv"]
+        );
+        assert!(closure.inputs["/nix/store/c.drv"].is_empty());
+        assert_eq!(
+            closure.texts["/nix/store/b.drv"],
+            recipes["/nix/store/b.drv"]
+        );
+
+        // The texts are written in the format that the transformer reads.
+        let directory = std::env::temp_dir().join(format!(
+            "bombon-transformer-test-recipe-closure-{}",
+            std::process::id()
+        ));
+        closure.write(&directory)?;
+        let index = RecipeIndex::from_file(&directory.join("recipes.json"));
+        let inputs: BTreeMap<String, Vec<String>> =
+            serde_json::from_str(&fs::read_to_string(directory.join("inputs.json"))?)?;
+        fs::remove_dir_all(&directory)?;
+        assert!(index.is_ok());
+        assert_eq!(inputs, closure.inputs);
+        Ok(())
+    }
+
+    #[test]
+    fn recipe_closure_with_malformed_or_missing_recipe() {
+        let read = |path: &str| match path {
+            "/nix/store/a.drv" => Ok(recipe(&["/nix/store/b.drv"])),
+            "/nix/store/b.drv" => Ok("not a recipe".to_string()),
+            _ => anyhow::bail!("No recipe {path}"),
+        };
+        let error = RecipeClosure::read(&["/nix/store/a.drv".into()], read)
+            .err()
+            .map(|error| format!("{error:#}"));
+        assert!(error.is_some_and(|error| error.contains("/nix/store/b.drv")));
+
+        let error = RecipeClosure::read(&["/nix/store/missing.drv".into()], read).err();
+        assert!(error.is_some());
     }
 }
