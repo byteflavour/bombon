@@ -3,9 +3,14 @@
   writeText,
   runCommand,
   jq,
+  fetchurl,
 }:
 
 let
+
+  # A `mirror://` URL is no URL a reader of the SBOM can download, so take its
+  # first mirror instead.
+  resolveUrl = url: lib.head ((fetchurl.resolveUrl or lib.singleton) url);
 
   # Find the outputs of a derivation.
   #
@@ -134,9 +139,7 @@ let
       "outputHash"
     ] drv)
     // {
-      # The store paths are only used to identify the derivations. Their string context is
-      # discarded so that the derivations do not have to be built to generate the SBOM.
-      path = builtins.unsafeDiscardStringContext drv.outPath;
+      path = drv.outPath;
       patches = patchFiles (drv.patches or [ ]);
     }
     // lib.optionalAttrs metadataOnly {
@@ -144,9 +147,7 @@ let
     }
     // lib.optionalAttrs (!metadataOnly) {
       # The store paths of this derivation's direct build-time dependencies, so the transformer can emit build-time `dependsOn` edges.
-      buildReferences = lib.unique (
-        map (o: builtins.unsafeDiscardStringContext o.outPath) (lib.concatLists (drvDeps drv))
-      );
+      buildReferences = lib.unique (map (o: o.outPath) (lib.concatLists (drvDeps drv)));
     }
     // lib.optionalAttrs (drv ? src && drv.src ? urls) {
       src =
@@ -155,7 +156,7 @@ let
           purl = builtins.tryEval (drv.src.meta.identifiers.purl or null);
         in
         {
-          inherit (drv.src) urls;
+          urls = map resolveUrl drv.src.urls;
         }
         // lib.optionalAttrs (drv.src ? outputHash) {
           hash = drv.src.outputHash;
@@ -163,6 +164,10 @@ let
         // lib.optionalAttrs (purl.success && purl.value != null) {
           purl = purl.value;
         };
+    }
+    # Several sources share no hash.
+    // lib.optionalAttrs (!(drv ? src) && lib.isList (drv.srcs or null)) {
+      src.urls = map resolveUrl (lib.concatMap (src: src.urls or [ ]) drv.srcs);
     }
     // lib.optionalAttrs (!metadataOnly && drv ? bombonVendoredSbom) {
       vendoredSbom = drv.bombonVendoredSbom.outPath;
@@ -298,19 +303,34 @@ let
     ) (lib.optionals inferFromSameSource lookups)
   );
 
+  allFields =
+    map (item: fields false item.drv) closure ++ map (item: fields true item.drv) metadataClosure;
+
+  # The transformer reads only the patches and vendored SBOMs. The other store
+  # paths are just names to it, and with their context building the SBOM
+  # would realise the whole build closure.
   unformattedJson = writeText "${drv.name}-unformatted-buildtime-dependencies.json" (
-    builtins.toJSON (
-      map (item: fields false item.drv) closure ++ map (item: fields true item.drv) metadataClosure
-    )
+    builtins.unsafeDiscardStringContext (builtins.toJSON allFields)
   );
+
+  readPaths = lib.concatMap (
+    f: f.patches ++ lib.optional (f ? vendoredSbom) f.vendoredSbom
+  ) allFields;
 
 in
 
 {
   # Format the json so that the transformer can better report where errors occur
-  packages = runCommand "${drv.name}-buildtime-dependencies.json" { } ''
-    ${jq}/bin/jq < ${unformattedJson} > "$out"
-  '';
+  packages =
+    runCommand "${drv.name}-buildtime-dependencies.json"
+      {
+        # There are too many paths for an environment variable.
+        __structuredAttrs = true;
+        inherit readPaths;
+      }
+      ''
+        ${jq}/bin/jq < ${unformattedJson} > "$out"
+      '';
 
   sameSourceMetadata = writeText "${drv.name}-same-source-metadata.json" (builtins.toJSON sameSource);
 }

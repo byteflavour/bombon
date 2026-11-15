@@ -3,7 +3,6 @@
   runCommand,
   fetchurl,
   transformer,
-  cyclonedx-cli,
   jq,
   buildtimeDependencies,
   runtimeDependencies,
@@ -103,8 +102,7 @@ let
     lib.optionals includeBuildtimeDependencies [
       "--include-buildtime-dependencies"
     ]
-    # A pattern is quoted for the shell and given with `=` as it can begin with a dash.
-    ++ lib.map (e: "--exclude=${lib.escapeShellArg e}") excludes
+    ++ lib.optionals (excludes != [ ]) (lib.map (e: "--exclude=${lib.escapeShellArg e}") excludes)
     # Only the store paths are of interest. They are built for the runtime dependencies anyway.
     ++ lib.map (path: "--extra-path ${builtins.unsafeDiscardStringContext "${path}"}") extraPaths
     ++ subjectArgs;
@@ -118,9 +116,12 @@ let
 in
 runCommand "${drv.name}.cdx.json"
   {
+    __structuredAttrs = true;
+    # SBOMs semantically don't have a closure.
+    unsafeDiscardReferences.out = true;
+
     nativeBuildInputs = [
       transformer
-      cyclonedx-cli
       jq
     ];
   }
@@ -132,16 +133,10 @@ runCommand "${drv.name}.cdx.json"
       --same-source-metadata ${buildtime.sameSourceMetadata} \
       ${buildtime.packages} \
       ${runtimeDependencies drv extraPaths} \
-      tmp.cdx.json
-
-    cyclonedx convert \
-      --input-format=json \
-      --input-file=tmp.cdx.json \
-      --output-version=v1_7 \
-      --output-file=converted.cdx.json
+      cyclonedx.cdx.json
 
     jq --from-file ${./finish-bom.jq} \
       --slurpfile options ${builtins.toFile "bom-options.json" (builtins.toJSON finishOptions)} \
       --slurpfile spdx ${spdxSchema} \
-      converted.cdx.json > $out
+      cyclonedx.cdx.json > "$out"
   ''

@@ -9,7 +9,7 @@ use cyclonedx_bom::external_models::normalized_string::NormalizedString;
 use cyclonedx_bom::external_models::spdx::SpdxExpression;
 use cyclonedx_bom::external_models::uri::{Purl, Uri};
 use cyclonedx_bom::models::attached_text::AttachedText;
-use cyclonedx_bom::models::bom::{Bom, BomReference, UrnUuid};
+use cyclonedx_bom::models::bom::{Bom, BomReference, SpecVersion, UrnUuid};
 use cyclonedx_bom::models::code::{Diff, Patch, PatchClassification, Patches};
 use cyclonedx_bom::models::component::{Classification, Component, Components, Cpe, Scope};
 use cyclonedx_bom::models::component::{
@@ -49,14 +49,16 @@ impl CycloneDXBom {
     /// Serialize to JSON as bytes.
     pub fn serialize(self) -> Result<Vec<u8>> {
         let mut output = Vec::<u8>::new();
-        self.0.output_as_json_v1_5(&mut output)?;
+        self.0.output_as_json(&mut output, SpecVersion::V1_7)?;
         Ok(output)
     }
 
     /// Read a `CycloneDXBom` from a path.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
-        let file = fs::File::open(path)?;
-        Ok(Self(Bom::parse_from_json(file)?))
+        let content = fs::read(&path)
+            .with_context(|| format!("Failed to open {}", path.as_ref().display()))?;
+        let value = serde_json::from_slice(&content).context("Failed to parse cyclonedx")?;
+        Ok(Self(Bom::parse_json_value(value)?))
     }
 
     pub fn build(
@@ -411,6 +413,7 @@ impl CycloneDXDependencies {
                     .map(|(dependency_ref, dependencies)| Dependency {
                         dependency_ref,
                         dependencies: dependencies.into_iter().collect(),
+                        provides: Vec::new(),
                     })
                     .collect(),
             ),
@@ -507,7 +510,12 @@ impl CycloneDXComponent {
                 external_references.extend(src.urls.iter().map(|u| convert_distribution(u)));
             }
         } else {
-            component.purl = Purl::new("nix", &name, &version).ok();
+            component.purl = derivation
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.identifiers.as_ref()?.purl.as_deref())
+                .and_then(|purl| Purl::from_str(purl).ok())
+                .or_else(|| Purl::new("nix", &name, &version).ok());
             component.hashes = derivation.output_hash.and_then(|s| convert_hash(&s));
             if let Some(src) = derivation.src
                 && !src.urls.is_empty()
@@ -577,20 +585,16 @@ impl From<CycloneDXComponent> for Component {
 
 /// The upstream source a package is built from, as an ancestor of its component.
 ///
-/// It is identified by the purl that nixpkgs states for the package, or else for its source. No
-/// purl is derived from where the source is downloaded from.
+/// It is identified by the purl that nixpkgs states for its source. The purl nixpkgs states for
+/// the package is the purl of the component itself. No purl is derived from where the source is
+/// downloaded from.
 fn upstream_ancestor(derivation: &Derivation, name: &str, version: &str) -> Option<Component> {
     // A downloaded file is the source itself, and of a component that is only known by its name
     // nothing is known about where it comes from.
     if derivation.is_file || derivation.identification == Identification::Name {
         return None;
     }
-    let purl = derivation
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.identifiers.as_ref())
-        .and_then(|identifiers| identifiers.purl.clone())
-        .or_else(|| derivation.src.as_ref().and_then(|src| src.purl.clone()));
+    let purl = derivation.src.as_ref().and_then(|src| src.purl.clone());
     let urls = derivation
         .src
         .as_ref()
@@ -674,12 +678,13 @@ fn cpes_to_evidence(possible_cpes: &[derivation::Cpe]) -> Option<ComponentEviden
     );
     // ComponentEvidence and Identity do not have Default implementations.
     Some(ComponentEvidence {
-        identity: Some(Identity {
+        identity: Some(vec![Identity {
             field: IdentityField::Cpe,
             methods: Some(methods),
             confidence: None,
             tools: None,
-        }),
+            concluded_value: None,
+        }]),
         licenses: None,
         copyright: None,
         occurrences: None,
@@ -701,7 +706,7 @@ fn origin(identification: Identification, is_file: bool) -> &'static str {
 /// Record that the version of a component was split off a name.
 fn name_to_evidence(name: &str, version: &str) -> ComponentEvidence {
     ComponentEvidence {
-        identity: Some(Identity {
+        identity: Some(vec![Identity {
             field: IdentityField::Version,
             methods: Some(Methods(vec![Method {
                 technique: "filename".to_string(),
@@ -711,7 +716,8 @@ fn name_to_evidence(name: &str, version: &str) -> ComponentEvidence {
             }])),
             confidence: None,
             tools: None,
-        }),
+            concluded_value: None,
+        }]),
         licenses: None,
         copyright: None,
         occurrences: None,
@@ -725,6 +731,7 @@ fn convert_distribution(url: &str) -> ExternalReference {
         url: string_to_url(url),
         comment: None,
         hashes: None,
+        properties: None,
     }
 }
 
@@ -744,6 +751,7 @@ fn convert_src(src: &Src) -> Vec<ExternalReference> {
             url: string_to_url(u),
             comment: None,
             hashes: src.hash.clone().and_then(|s| convert_hash(&s)),
+            properties: None,
         })
         .collect()
 }
@@ -775,6 +783,7 @@ fn convert_homepage(homepage: &str) -> ExternalReference {
         url: string_to_url(homepage),
         comment: None,
         hashes: None,
+        properties: None,
     }
 }
 
@@ -789,6 +798,8 @@ fn metadata_from_derivation(derivation: Derivation) -> Metadata {
         licenses: None,
         properties: None,
         lifecycles: None,
+        manufacturer: None,
+        distribution_constraints: None,
     }
 }
 
@@ -950,12 +961,19 @@ mod tests {
         assert_eq!(references.len(), 2);
         assert!(references.iter().all(|r| r["type"] == "distribution"));
 
-        // The package's own purl is the more specific statement.
-        let own = ancestor(package_from_source(
+        // The package's own purl is the purl of the component, not of its source.
+        let derivation = package_from_source(
             Some("pkg:github/libssh2/libssh2@1.11.1"),
             Some("pkg:github/libssh2/libssh2@libssh2-1.11.1"),
-        ))?;
-        assert_eq!(own["purl"], "pkg:github/libssh2/libssh2@1.11.1");
+        );
+        assert_eq!(
+            component(derivation.clone())?["purl"],
+            "pkg:github/libssh2/libssh2@1.11.1"
+        );
+        assert_eq!(
+            ancestor(derivation)?["purl"],
+            "pkg:github/libssh2/libssh2@libssh2-1.11.1"
+        );
 
         // A tarball from a mirror: no purl is made up from where it is downloaded from.
         let without = ancestor(package_from_source(None, None))?;
@@ -1699,7 +1717,7 @@ mod tests {
 
         assert_eq!(component["name"], "emacs-pgtk-with-packages");
         assert_eq!(component["version"], "31.1");
-        let identity = &component["evidence"]["identity"];
+        let identity = &component["evidence"]["identity"][0];
         assert_eq!(identity["field"], "version");
         assert_eq!(identity["methods"][0]["technique"], "filename");
         assert_eq!(
@@ -1749,6 +1767,35 @@ mod tests {
             .as_array()
             .context("Missing patches")?;
         assert_eq!(listed.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn purl_from_meta_identifiers() -> Result<()> {
+        let derivation: Derivation = serde_json::from_value(serde_json::json!({
+            "path": "/nix/store/a-jq-1.8.1",
+            "pname": "jq",
+            "version": "1.8.1",
+            "patches": [],
+            "meta": {"identifiers": {"purl": "pkg:github/jqlang/jq@jq-1.8.1"}},
+        }))?;
+        let component: Component = CycloneDXComponent::from_derivation(derivation).into();
+        assert_eq!(
+            component.purl.map(|purl| purl.to_string()).as_deref(),
+            Some("pkg:github/jqlang/jq@jq-1.8.1")
+        );
+
+        let derivation: Derivation = serde_json::from_value(serde_json::json!({
+            "path": "/nix/store/b-hello-2.12",
+            "pname": "hello",
+            "version": "2.12",
+            "patches": [],
+        }))?;
+        let component: Component = CycloneDXComponent::from_derivation(derivation).into();
+        assert_eq!(
+            component.purl.map(|purl| purl.to_string()).as_deref(),
+            Some("pkg:nix/hello@2.12")
+        );
         Ok(())
     }
 

@@ -79,16 +79,22 @@ pub fn transform(options: &Options) -> Result<()> {
     // what depends on them lacks a dependency.
     let (all_derivations, excluded) = without_excluded(all_derivations.filter(is_component), &set);
 
+    // Find the SBOMS to use for the vendored dependencies.
+    let mut sboms_to_include = Vec::new();
+    for derivation in &all_derivations {
+        if let Some(sbom_path) = derivation.vendored_sbom.as_ref() {
+            sboms_to_include.push((sbom_path.clone(), derivation.path.clone()));
+        }
+    }
+
     let mut components = CycloneDXComponents::from_derivations(all_derivations);
 
     // Augment the components with those retrieved from the `sbom` passthru attribute of the
     // derivations, preserving the (language-level) dependency edges those SBOMs declare.
     let mut vendored_dependencies = VendoredDependencies::new();
-    for derivation in buildtime_input.0.values() {
-        if let Some(sbom_path) = &derivation.vendored_sbom {
-            vendored_dependencies
-                .extend(components.extend_from_directory(sbom_path, &derivation.path)?);
-        }
+    for (sbom_path, derivation_path) in sboms_to_include {
+        vendored_dependencies
+            .extend(components.extend_from_directory(sbom_path, &derivation_path)?);
     }
 
     components.deduplicate();
