@@ -1,8 +1,8 @@
-# Finishes the SBOM after it has been converted to the final CycloneDX version.
+# Finishes the SBOM the transformer writes.
 #
-# The transformer writes CycloneDX v1.5. What only exists in later versions is passed along in
-# properties and moved to where it belongs here. Such a property is never part of the final SBOM:
-# if it cannot be moved, the SBOM is not generated.
+# What the transformer does not set itself is passed along in properties and moved to where it
+# belongs here. Such a property is never part of the final SBOM: if it cannot be moved, the SBOM is
+# not generated.
 
 # The creator of a component, see BSI TR-03183-2 section 5.2.2. `manufacturer` only exists on a
 # component since CycloneDX v1.6.

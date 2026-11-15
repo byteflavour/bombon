@@ -6,7 +6,7 @@
 
 - A component of a Nix package has the upstream source it is built from as
   an ancestor in its pedigree, with its hash, its download addresses and the
-  PURL nixpkgs states for the package or its source.
+  PURL nixpkgs states for its source.
 - The components of the Go modules that `passthruVendoredSbom.go` adds now have
   evidence of their licenses. The licenses are detected from their texts in the
   sources of the modules, so they are included as evidence and not as the
@@ -64,11 +64,12 @@
   tells whether the component is described by a package, a build recipe, a
   build recipe with the metadata of a same-source package, a download or a
   name.
+- Added support for the purl from `meta.identifiers.purl`, e.g.
+  `pkg:github/jqlang/jq@jq-1.8.1`. It is used instead of the `pkg:nix` purl
+  derived from the name and version.
 
 ### Changed
 
-- The packages a SBOM is generated for are not built anymore just to generate
-  the SBOM. Only the runtime closure, the patches and the vendored SBOMs are.
 - Dependencies that are only referred to in a string (e.g. `"${pkgs.jq}/bin/jq"`)
   are now described by what their build recipe (`.drv` file) states instead of
   by what can be guessed from their store path. Their name, version, patches
@@ -83,15 +84,25 @@
 
 ### Fixed
 
+- Fixed `passthruVendoredSbom.pnpm` for packages that use their pnpm store
+  directly from the read-only Nix store. `pnpm sbom` opens the store index
+  read-write, so it failed with `attempt to write a readonly database`.
+- Fixed `excludes` for patterns with characters that are special to the shell,
+  like `(`, `|`, `*` or a space, and for patterns that begin with a dash. The
+  patterns were not quoted, so building the SBOM failed.
+- Fixed building an SBOM realising the whole build closure of the package,
+  even without `includeBuildtimeDependencies`. Only the patches and vendored
+  SBOMs that the transformer reads are now built or substituted.
+- Fixed source URLs like `mirror://gnu/hello/hello-2.12.3.tar.gz` that only
+  `fetchurl` understands. The SBOM now references the first mirror instead.
+- Fixed missing source URLs of derivations that have several sources in `srcs`
+  and no `src`, like `tzdata`. The URLs of all of them are now included.
 - A license whose SPDX id the CycloneDX schema does not know, like `TekHVC`,
   is now given by its name. The SBOM did not validate.
 - SBOMs can be generated in pure evaluation, e.g. when bombon is a flake input.
   The build recipes were read while evaluating, which pure evaluation does not
   allow. They are now read while building. Looking up packages in
   `packageSets` needs import from derivation.
-- A pattern in `excludes` can now have characters that are special to the
-  shell, like `(`, `|`, `*` or a space, and can begin with a dash. The build of
-  the SBOM failed for such patterns as they were not quoted.
 - The dependency graph is connected to what the SBOM describes now. A
   dependency was only included if both sides are components, so everything a
   derivation refers to through a store path that is not a component (e.g. the

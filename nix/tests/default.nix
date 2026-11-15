@@ -89,6 +89,14 @@ let
       drv = hello;
       options = buildtimeOptions;
     }
+    # A pattern with characters that are special to the shell and a leading dash
+    {
+      name = "hello-excludes";
+      drv = hello;
+      options = {
+        excludes = [ "-(libunistring|libidn2)-[0-9.]*$" ];
+      };
+    }
 
     {
       name = "python3";
@@ -180,6 +188,22 @@ let
       name = "taze-buildtime";
       drv = pnpmPassthru taze;
       options = buildtimeOptions;
+    }
+
+    # A store that is not writable, like a store used from the Nix store
+    {
+      name = "taze-read-only-store";
+      drv = pnpmPassthru (
+        taze.overrideAttrs {
+          preConfigure = ''
+            makeStoreReadOnly() {
+              chmod -R a-w "$(pnpm config get store-dir)"
+            }
+            postConfigureHooks+=(makeStoreReadOnly)
+          '';
+        }
+      );
+      options = { };
     }
 
     {
@@ -323,8 +347,10 @@ let
         ([ .components[] | select(.name == "jq") ]
           | length > 0 and all(
             (.licenses | length > 0) and (.properties | any(.name == "bombon:origin" and .value == "package"))
-            # The package states its own purl
-            and (.pedigree.ancestors[0].purl | startswith("pkg:github/jqlang/jq@"))
+            # The package states its own purl, which is the purl of its component. Its source is a
+            # tarball without one.
+            and (.purl | startswith("pkg:github/jqlang/jq@"))
+            and (.pedigree.ancestors[0] | has("purl") | not)
           ))
         and ([ .components[] | select(.name == "hello") ] | length == 0)
       '';
@@ -421,3 +447,18 @@ let
     );
 in
 genAttrsFromDrvs testDerivations buildBomAndValidate
+// {
+  # The src of hello is fetched from a mirror:// URL.
+  mirror-url = pkgs.runCommand "mirror-url" { nativeBuildInputs = [ pkgs.jq ]; } ''
+    sbom="${buildBom pkgs.hello { }}"
+    jq -e '[.metadata.component.externalReferences[] | select(.type == "vcs") | .url] | length > 0 and all(startswith("https://"))' "$sbom"
+    touch $out
+  '';
+
+  # tzdata has `srcs` instead of a `src`.
+  srcs-urls = pkgs.runCommand "srcs-urls" { nativeBuildInputs = [ pkgs.jq ]; } ''
+    sbom="${buildBom pkgs.tzdata { }}"
+    jq -e '[.metadata.component.externalReferences[] | select(.type == "vcs") | .url] | length == ${toString (builtins.length pkgs.tzdata.srcs)} and all(startswith("https://"))' "$sbom"
+    touch $out
+  '';
+}
